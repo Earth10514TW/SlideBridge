@@ -1,0 +1,53 @@
+diff --git a/src/lib/emf2svg_utils.c b/src/lib/emf2svg_utils.c
+index 5aba05d..ea1515b 100644
+--- a/src/lib/emf2svg_utils.c
++++ b/src/lib/emf2svg_utils.c
+@@ -982,11 +982,22 @@ void text_style_draw(FILE *out, drawingStates *states, POINT_D Org) {
+         orientation = 1;
+     }
+ 
++    uint16_t align = states->currentDeviceContext.text_align;
++    double pos_x = Org.x;
++    double pos_y = Org.y;
++    if ((align & U_TA_BASELINE) == U_TA_BASELINE) {
++        pos_y = Org.y;
++    } else if ((align & U_TA_BOTTOM) == U_TA_BOTTOM) {
++        pos_y = Org.y;
++    } else {
++        pos_y = Org.y + font_height * 0.9;
++    }
++
+     if (states->currentDeviceContext.font_escapement != 0) {
+-        fprintf(out, "transform=\"rotate(%d, %.4f, %.4f) translate(0, %.4f)\" ",
++        fprintf(out, "transform=\"rotate(%d, %.4f, %.4f)\" ",
+                 (orientation *
+                  (int)states->currentDeviceContext.font_escapement / 10),
+-                Org.x, (Org.y + font_height * 0.9), font_height * 0.9);
++                pos_x, pos_y);
+     }
+ 
+     if (states->text_layout == U_LAYOUT_RTL) {
+@@ -1013,7 +1024,6 @@ void text_style_draw(FILE *out, drawingStates *states, POINT_D Org) {
+                 states->currentDeviceContext.font_weight);
+ 
+     // horizontal position
+-    uint16_t align = states->currentDeviceContext.text_align;
+     if ((align & U_TA_CENTER) == U_TA_CENTER) {
+         fprintf(out, "text-anchor=\"middle\" ");
+     } else if ((align & U_TA_CENTER2) == U_TA_CENTER2) {
+@@ -1024,14 +1034,7 @@ void text_style_draw(FILE *out, drawingStates *states, POINT_D Org) {
+         fprintf(out, "text-anchor=\"start\" ");
+     }
+     // vertical position
+-    if ((align & U_TA_BOTTOM) == U_TA_BOTTOM) {
+-        fprintf(out, "x=\"%.4f\" y=\"%.4f\" ", Org.x, Org.y);
+-    } else if ((align & U_TA_BASELINE) == U_TA_BASELINE) {
+-        fprintf(out, "x=\"%.4f\" y=\"%.4f\" ", Org.x, Org.y);
+-    } else {
+-        fprintf(out, "x=\"%.4f\" y=\"%.4f\" ", Org.x,
+-                Org.y + font_height * 0.9);
+-    }
++    fprintf(out, "x=\"%.4f\" y=\"%.4f\" ", pos_x, pos_y);
+     fprintf(out, "font-size=\"%.4f\" ", font_height);
+ }
+ 

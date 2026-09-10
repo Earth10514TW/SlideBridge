@@ -16,39 +16,29 @@ Python CLI: `python3 -m slidebridge scan INPUT.pptx --json` and `python3 -m slid
 
 Automatic pipeline: EMF → patched libemf2svg → SVG → Inkscape → PNG. WMF uses Inkscape directly. The package patch updates slide and VML relationships, preserves existing media/OLE and slide XML, and writes a new file without overwriting. Optional `--preview MEMBER=PNG` exists from the previous fix, but is not needed for the generic pipeline.
 
-## Status: generic renderer fix is COMPLETE
+## Status: generic renderer pen-width & text-rotation fixes COMPLETE
 
-### Root cause fixed
+### Root causes fixed
 
-`stroke_draw()` in `emf2svg_utils.c` switches on `stroke_mode & 0x000F0000`. Ordinary `EMR_CREATEPEN` stores only line-style bits (e.g. `PS_SOLID=0`) — the type bits are always zero, matching `U_PS_COSMETIC`, which hardcodes width 1. The actual `stroke_width` was discarded.
+1. **Pen width**: `stroke_draw()` in `emf2svg_utils.c` switched on `stroke_mode & 0x000F0000`. Ordinary `EMR_CREATEPEN` lacked geometric type bits, matching `U_PS_COSMETIC` and hardcoding width 1. Fixed by ORing `U_PS_GEOMETRIC` when width > 0.
+2. **Text rotation / Axis title alignment**: `text_style_draw()` in `emf2svg_utils.c` added a redundant `translate(0, font_height * 0.9)` and miscalculated the rotation center as `(Org.x, Org.y + font_height * 0.9)`. Origin exports axis titles with `SetTextAlign(TA_BASELINE)` where `(Org.x, Org.y)` is already the baseline origin. Because subscripts and superscripts have smaller `font_height` values than main labels (e.g. `j (mA cm^-2)`, `FE_{H_2}`, `FE_{CO}`), the font-height-dependent translation offset each fragment by a different amount, causing vertical axis labels to scatter, overlap, and distort. Fixed by aligning `pos_y` to baseline and anchoring rotation cleanly at `(pos_x, pos_y)` without extra translate.
 
-### Patch applied
+### Patches applied
 
-In `U_EMRCREATEPEN_draw` (`emf2svg_rec_object_creation.c`), the fix ORs in `U_PS_GEOMETRIC` when `lopnWidth.x > 0`, so `stroke_draw()` uses the real width. Wide dashed pens (width > 1) are normalized to `PS_SOLID` per Windows `CreatePen` semantics. Zero-width pens remain cosmetic (1px hairline). `EXTCREATEPEN` is untouched.
-
-Source patch: `patches/slidebridge_pen_fix.patch` (GPLv2-compliant).
+- Pen width fix: `patches/slidebridge_pen_fix.patch`
+- Text rotation fix: `patches/slidebridge_text_rotation_fix.patch`
 
 ### Build and integration
 
-- `scripts/build_patched_emf2svg.sh` builds a pinned patched `emf2svg-conv` at `artifacts/bin/emf2svg-conv`, separate from Homebrew.
+- `scripts/build_patched_emf2svg.sh` builds a pinned patched `emf2svg-conv` at `artifacts/bin/emf2svg-conv`.
 - `slidebridge/core.py` prefers the project-local binary via `shutil.which(local_path)` before falling back to the system copy.
-- Build requires: Homebrew `cmake`, `pkgconf`, `argp-standalone`, `libpng`, `freetype`, `fontconfig`.
 
 ### Test results
 
-- 6/6 native pen-width tests pass (patched binary):
-  - `test_createpen_preserves_positive_logical_widths` (widths 1, 2, 13, 46)
-  - `test_zero_width_remains_hairline`
-  - `test_extcreatepen_geometric_width_preserved`
-  - `test_extcreatepen_cosmetic_stays_hairline`
-  - `test_createpen_wide_dash_normalized_to_solid` (width 10 + PS_DASH → solid width 10)
-  - `test_createpen_width1_dash_stays_dashed` (width 1 + PS_DASH → dashed width 1)
-- 14/14 package tests pass (unchanged).
-- Sample PPTX regenerated automatically (4 EMFs → 4 PNGs), package verification passed with all 4 OLE binaries preserved.
-
-### Remaining caveats
-
-Font substitution, glyph positioning, and colour-space differences between libemf2svg/Inkscape and Windows GDI are not addressed by this patch. The generated PNGs will have correct **line widths and stroke styles** but may differ from Windows references in text rendering and exact layout. This is inherent to the cross-platform rendering approach.
+- 6/6 native pen-width tests pass.
+- 3/3 native text rotation tests pass (`test_rotated_text_rotation_center_matches_coordinates`, `test_rotated_subscript_superscript_keep_true_anchor`, `test_unrotated_text_has_no_transform`).
+- 14/14 package tests pass.
+- Sample PPTX regenerated automatically (`artifacts/presentation_auto.pptx`), package verification passed with all 4 OLE binaries preserved and vertical axis titles aligned.
 
 ## Local samples and artifacts — private, not tracked
 

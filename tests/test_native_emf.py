@@ -53,3 +53,41 @@ class NativePenTests(unittest.TestCase):
         self.assertTrue(paths)
         self.assertEqual(float(paths[0].get('stroke-width')), 1)
         self.assertIsNotNone(paths[0].get('stroke-dasharray'))
+
+
+@unittest.skipUnless(os.environ.get('SLIDEBRIDGE_TEST_EMF2SVG'), 'native backend not selected')
+class NativeTextTests(unittest.TestCase):
+    def render_text(self, **kwargs):
+        from emf_fixture import text_emf
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = Path(directory) / 'text.emf', Path(directory) / 'text.svg'
+            source.write_bytes(text_emf(**kwargs))
+            subprocess.run([os.environ['SLIDEBRIDGE_TEST_EMF2SVG'], '-i', str(source), '-o', str(target)],
+                           capture_output=True, check=True, timeout=30)
+            root = ET.parse(target).getroot()
+            return [e for e in root.iter() if e.tag.endswith('text')]
+
+    def test_rotated_text_rotation_center_matches_coordinates(self):
+        """Escapement 900 with TA_BASELINE must rotate around (x, y) with no extra translate."""
+        elements = self.render_text(text="FE", escapement=900, align=0x18, x=100, y=200, height=-300)
+        self.assertTrue(elements)
+        text_el = elements[0]
+        self.assertEqual(text_el.get('x'), '100.0000')
+        self.assertEqual(text_el.get('y'), '200.0000')
+        transform = text_el.get('transform', '')
+        self.assertEqual(transform, 'rotate(-90, 100.0000, 200.0000)')
+        self.assertNotIn('translate', transform)
+
+    def test_rotated_subscript_superscript_keep_true_anchor(self):
+        """Different font heights must not introduce differential offsets along or across baseline."""
+        el_main = self.render_text(text="FE", escapement=900, align=0x18, x=500, y=1000, height=-738)[0]
+        el_sub = self.render_text(text="2", escapement=900, align=0x18, x=500, y=800, height=-181)[0]
+        self.assertEqual(el_main.get('transform'), 'rotate(-90, 500.0000, 1000.0000)')
+        self.assertEqual(el_sub.get('transform'), 'rotate(-90, 500.0000, 800.0000)')
+
+    def test_unrotated_text_has_no_transform(self):
+        """Escapement 0 text should have no transform attribute."""
+        elements = self.render_text(text="Normal", escapement=0, align=0x18, x=100, y=200, height=-300)
+        self.assertTrue(elements)
+        self.assertIsNone(elements[0].get('transform'))
+
