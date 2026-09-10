@@ -448,7 +448,15 @@ def _convert_media(
             pass
         # libemf2svg avoids native EMF importer crashes on some macOS builds.
         # Keep this intermediate private; only the rendered PNG enters PPTX.
-        emf_converter = shutil.which("emf2svg-conv") if suffix == ".emf" else None
+        emf_converter = None
+        if suffix == ".emf":
+            # Prefer the project-local patched binary over the system copy.
+            # Both lookups go through shutil.which so test mocks work.
+            local_bin = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),
+                "artifacts", "bin", "emf2svg-conv",
+            )
+            emf_converter = shutil.which(local_bin) or shutil.which("emf2svg-conv")
         if emf_converter:
             svg_temp = os.path.join(temporary_dir, "intermediate.svg")
             if os.path.exists(svg_temp):

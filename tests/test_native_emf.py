@@ -38,3 +38,18 @@ class NativePenTests(unittest.TestCase):
 
     def test_extcreatepen_cosmetic_stays_hairline(self):
         self.assertEqual(float(self.render(width=1, style=0, extended=True)[0].get('stroke-width')), 1)
+
+    def test_createpen_wide_dash_normalized_to_solid(self):
+        """Width 10 + PS_DASH (1) should render as solid width 10 per CreatePen."""
+        paths = self.render(width=10, style=1)
+        self.assertTrue(paths)
+        self.assertEqual(float(paths[0].get('stroke-width')), 10)
+        # Dash array must NOT be present after normalization.
+        self.assertIsNone(paths[0].get('stroke-dasharray'))
+
+    def test_createpen_width1_dash_stays_dashed(self):
+        """Width 1 + PS_DASH should keep the dash pattern (no normalization)."""
+        paths = self.render(width=1, style=1)
+        self.assertTrue(paths)
+        self.assertEqual(float(paths[0].get('stroke-width')), 1)
+        self.assertIsNotNone(paths[0].get('stroke-dasharray'))

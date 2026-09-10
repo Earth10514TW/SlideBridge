@@ -1,0 +1,27 @@
+diff --git a/src/lib/emf2svg_rec_object_creation.c b/src/lib/emf2svg_rec_object_creation.c
+index 3b07b84..4d25f77 100644
+--- a/src/lib/emf2svg_rec_object_creation.c
++++ b/src/lib/emf2svg_rec_object_creation.c
+@@ -160,6 +160,22 @@ void U_EMRCREATEPEN_draw(const char *contents, FILE *out,
+     states->objectTable[index].stroke_green = pEmr->lopn.lopnColor.Green;
+     states->objectTable[index].stroke_mode = pEmr->lopn.lopnStyle;
+     states->objectTable[index].stroke_width = pEmr->lopn.lopnWidth.x;
++
++    /* SlideBridge fix: ordinary CREATEPEN with positive logical width is
++     * geometric, not cosmetic.  Width 0 stays cosmetic (1px hairline).
++     * Wide dashed/dotted styles (width > 1) are normalized to PS_SOLID
++     * because Windows CreatePen only supports solid lines at width > 1. */
++    if (pEmr->lopn.lopnWidth.x > 0) {
++        states->objectTable[index].stroke_mode |= U_PS_GEOMETRIC;
++        uint32_t lineStyle = pEmr->lopn.lopnStyle & 0xFF;
++        if (pEmr->lopn.lopnWidth.x > 1 &&
++            lineStyle != U_PS_SOLID &&
++            lineStyle != U_PS_NULL &&
++            lineStyle != U_PS_INSIDEFRAME) {
++            states->objectTable[index].stroke_mode =
++                (states->objectTable[index].stroke_mode & ~0xFF) | U_PS_SOLID;
++        }
++    }
+ }
+ void U_EMREXTCREATEFONTINDIRECTW_draw(const char *contents, FILE *out,
+                                       drawingStates *states) {
