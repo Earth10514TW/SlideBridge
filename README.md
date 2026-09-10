@@ -61,3 +61,19 @@ python3 scripts/verify_package.py input.pptx input_fixed.pptx
 ```
 
 - [libemf2svg](https://github.com/kakwa/libemf2svg)：EMF → SVG 本機解析器。
+
+## 使用 Windows 原圖保留外觀
+
+自動 EMF → SVG 轉換可能改變線寬、矩形邊框或上下標位置；ZIP／OLE 檢查通過不代表外觀一致。若有 Windows／Origin 匯出的正確 PNG，可指定它作為對應 metafile 的預覽。PNG bytes、解析度、透明度完整保留，跳過該圖片的 renderer，OLE 與投影片的位置／尺寸保持原樣。
+
+先使用 `scan --json` 找到 package 內的圖片路徑，再依圖形內容確認對應關係：
+
+```sh
+python3 -m slidebridge fix input.pptx -o windows-previews.pptx \
+  --preview 'ppt/media/image5.emf=/path/to/windows-line-chart.png' \
+  --preview 'ppt/media/image8.emf=/path/to/windows-bar-chart.png'
+```
+
+`--preview` 可重複使用；它只接受來源 package 已存在的 EMF／WMF 路徑。未指定的 metafile 仍使用自動轉換。同一圖片若被多張投影片或 VML 分支共用，所有內部關聯會一起更新。請使用完整圖框且長寬比相符的 Windows 匯出圖，因為工具保留既有投影片上的圖片大小與裁切，不會自動重新排版。
+
+`--json` 報告以 `method: reference-png` 區分原圖置入與 `method: rendered` 的自動轉換。這是高保真預覽替換功能，並未修正通用 EMF 解析器的所有渲染差異。

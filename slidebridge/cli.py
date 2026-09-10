@@ -29,13 +29,22 @@ def main(argv=None):
     fix.add_argument("--dpi", type=int, default=300)
     fix.add_argument("--inkscape", default=None, help="Path to Inkscape executable")
     fix.add_argument("--json", action="store_true")
+    fix.add_argument("--preview", action="append", default=[], metavar="MEMBER=PNG",
+                     help="Use an exact Windows PNG export for a package EMF/WMF member; repeatable")
     args = parser.parse_args(argv)
     try:
         if args.command == "scan":
             report = scan(args.input)
         else:
             output = args.output or args.input.with_name(args.input.stem + "_fixed.pptx")
-            report = repair(args.input, output, inkscape=args.inkscape or find_inkscape(), dpi=args.dpi)
+            previews = {}
+            for value in args.preview:
+                member, separator, filename = value.partition("=")
+                if not separator or not member or not filename or member in previews:
+                    raise ValueError("--preview requires a unique package MEMBER=PNG path")
+                previews[member] = filename
+            report = repair(args.input, output, inkscape=args.inkscape or find_inkscape(),
+                            dpi=args.dpi, reference_previews=previews)
         if args.json:
             print(json.dumps(report, ensure_ascii=False, indent=2))
         elif args.command == "scan":

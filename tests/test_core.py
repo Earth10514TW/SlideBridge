@@ -144,6 +144,28 @@ class CoreTests(unittest.TestCase):
                 z.writestr(n, data)
         self.assertTrue(scan(self.source)['media'][0]['ole_preview'])
 
+    @patch('slidebridge.core.subprocess.run', side_effect=renderer)
+    def test_reference_png_is_embedded_exactly_and_shared(self, run):
+        reference = self.source.parent / 'Windows original.png'
+        reference.write_bytes(PNG)
+        report = repair(self.source, self.output,
+                        reference_previews={'ppt/media/image1.emf': reference})
+        self.assertEqual(run.call_count, 1)  # Only WMF is rendered.
+        self.assertEqual(report['converted'][0]['method'], 'reference-png')
+        with zipfile.ZipFile(self.output) as z:
+            self.assertEqual(z.read('ppt/media/image1.png'), PNG)
+            self.assertEqual(z.read('ppt/embeddings/oleObject1.bin'), b'\x00Origin opaque OLE\xff')
+
+    @patch('slidebridge.core.subprocess.run')
+    def test_reference_validation_precedes_conversion(self, run):
+        reference = self.source.parent / 'bad.png'
+        reference.write_bytes(b'not a PNG')
+        for member in ['ppt/media/missing.emf', 'ppt/media/image1.emf']:
+            with self.assertRaises(SlideBridgeError):
+                repair(self.source, self.output, reference_previews={member: reference})
+        run.assert_not_called()
+        self.assertFalse(self.output.exists())
+
     def test_invalid_zip(self):
         self.source.write_bytes(b'not a zip')
         with self.assertRaises(SlideBridgeError):

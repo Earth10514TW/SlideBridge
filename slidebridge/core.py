@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import urllib.parse
 import zipfile
+from pathlib import Path
 from typing import Iterable
 from xml.etree import ElementTree
 
@@ -419,6 +420,7 @@ def _convert_media(
     inkscape: str,
     dpi: int | float,
     temporary_dir: str,
+    reference_previews: dict[str, bytes],
 ) -> tuple[dict[str, str], dict[str, bytes], list[dict]]:
     replacements: dict[str, str] = {}
     generated: dict[str, bytes] = {}
@@ -428,6 +430,13 @@ def _convert_media(
         source_name = info.filename
         output_name = _unique_png_name(source_name, allocated)
         allocated.add(output_name)
+        if source_name in reference_previews:
+            png = reference_previews[source_name]
+            replacements[source_name] = output_name
+            generated[output_name] = png
+            converted.append({"source": source_name, "path": output_name,
+                              "bytes": len(png), "method": "reference-png"})
+            continue
         suffix = posixpath.splitext(source_name)[1].lower() or ".emf"
         source_temp = os.path.join(temporary_dir, "source" + suffix)
         output_temp = os.path.join(temporary_dir, "rendered.png")
@@ -493,7 +502,7 @@ def _convert_media(
             raise RepairError(f"Inkscape produced an invalid PNG for {source_name}")
         replacements[source_name] = output_name
         generated[output_name] = png
-        converted.append({"source": source_name, "path": output_name, "bytes": len(png)})
+        converted.append({"source": source_name, "path": output_name, "bytes": len(png), "method": "rendered"})
     return replacements, generated, converted
 
 
@@ -502,6 +511,7 @@ def repair(
     output: os.PathLike[str] | str,
     inkscape: str = "inkscape",
     dpi: int | float = 300,
+    reference_previews: dict[str, os.PathLike[str] | str] | None = None,
 ) -> dict:
     """Convert package EMF/WMF media to PNG and write a new PPTX atomically.
 
@@ -510,6 +520,8 @@ def repair(
     targets are updated to collision-safe PNG members while original media,
     OLE binaries, and unrelated ZIP member payloads are retained.  A failed
     conversion or invalid output leaves no output file behind.
+    ``reference_previews`` maps exact EMF/WMF package paths to trusted PNG
+    exports, which are embedded byte-for-byte without resizing or rendering.
     """
     source_path = _path_string(source)
     output_path = _path_string(output)
@@ -540,9 +552,21 @@ def repair(
     all_names = {info.filename for info in infos}
     temporary_output: str | None = None
     try:
+        reference_bytes: dict[str, bytes] = {}
+        candidates = {info.filename for info in media_infos}
+        for member, reference in (reference_previews or {}).items():
+            if member not in candidates:
+                raise RepairError(f"Reference target is not an EMF/WMF member: {member}")
+            reference_path = Path(reference)
+            if reference_path.stat().st_size > 64 * 1024 * 1024:
+                raise RepairError(f"Reference PNG exceeds 64 MiB: {reference_path}")
+            png = reference_path.read_bytes()
+            if not _png_is_basic(png):
+                raise RepairError(f"Invalid reference PNG: {reference_path}")
+            reference_bytes[member] = png
         with tempfile.TemporaryDirectory(prefix="slidebridge-", dir=parent) as temporary_dir:
             replacements, generated, converted = _convert_media(
-                archive, media_infos, all_names, inkscape, dpi, temporary_dir
+                archive, media_infos, all_names, inkscape, dpi, temporary_dir, reference_bytes
             )
             changed_relationships: list[str] = []
             updated_parts: dict[str, bytes] = {}
