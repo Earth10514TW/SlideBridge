@@ -1,6 +1,20 @@
 # SlideBridge handoff
 
-Updated: 2026-09-10 (Asia/Taipei). Generic pen-width fix implemented and verified.
+Updated: 2026-09-10 (Asia/Taipei). Origin OLE bidirectional writeback complete.
+
+## Current direction: Origin editing without Windows PowerPoint
+
+The current implementation and reproducible commands are documented in [docs/origin-bridge.md](docs/origin-bridge.md).
+
+Completed components:
+1. **`prepare-ole`**: Extracts embedded OLE storage safely to session directory with source SHA-256 and relationship manifest.
+2. **Native Windows x64 OLE host (`native/origin-bridge/`)**: Cross-compiled with MinGW `-static`. Verified interactive roundtrip on Parallels Windows 11 VM with OriginPro 2021: user edited X-axis label from `Time (hr)` to `TT (hr)`, saved, and reopened verifying binary persistence (`reopen-verify.bin`, SHA-256: `267d50b4...`).
+3. **`writeback-ole`**: Implemented in `slidebridge/bridge.py` and `slidebridge/cli.py`. Enforces strict paired writeback (OLE binary + matching preview image), source presentation & target OLE SHA-256 conflict detection (`--force` bypass), atomic temp-file assembly, DrawingML / VML relationship rewriting (e.g. EMF to PNG redirection), and `[Content_Types].xml` maintenance.
+4. **Validation & Verification**:
+   - 39 Python unit tests (100% pass rate).
+   - 9 native EMF converter tests (100% pass rate).
+   - 4 C++ persistence fault-injection tests (100% pass rate).
+   - Real presentation writeback verified via `scripts/verify_package.py` on `/Users/earth/Downloads/presentation.pptx` (`artifacts/presentation_writeback_png.pptx`), with perfect CRC, relationships, and unaltered secondary OLE objects.
 
 ## User objective and constraints
 
@@ -90,7 +104,7 @@ Branch: main. Latest commits:
 - `6d7c91e` minimal generic pen-width regression and diagnostic checkpoint.
 - `64b383d` fix: patch libemf2svg CREATEPEN pen-width bug and integrate patched build.
 
-## Next steps (user decision required)
+## Previous converter verification follow-up
 
 1. Open `artifacts/presentation_auto.pptx` in PowerPoint and compare the 4 converted images against Windows references (`圖片1.png`, `圖片2.png`). Pen widths should now match; font/positioning differences are expected.
 2. Verify Windows Origin double-click editing still works on the new output.

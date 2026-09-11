@@ -2,6 +2,8 @@
 
 Fix PowerPoint graphics across Windows and Mac.
 
+另有已完成雙向驗證的 [Origin OLE 編輯橋接功能](docs/origin-bridge.md)：從簡報抽出 OLE 副本（`prepare-ole`），由 Windows 原生 helper 載入 Origin 進行本機編輯，並在產出更新後預覽圖時，以安全成對約束回寫簡報（`writeback-ole`），全程無需 Windows PowerPoint。
+
 SlideBridge 的第一版是本機 CLI：掃描 `.pptx` 中的 EMF／WMF，使用本機轉換器產生 PNG，重新連接圖片關聯，輸出新的簡報。可處理普通圖片與 OLE 物件的預覽圖；不執行或解碼 Origin OLE。
 
 ## 使用
