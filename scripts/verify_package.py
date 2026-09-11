@@ -16,8 +16,9 @@ def resolve(part, target):
     return posixpath.normpath(target.lstrip('/') if target.startswith('/') else posixpath.join(posixpath.dirname(source), target))
 
 
-def verify(source, output):
+def verify(source, output, allow_parts=None):
     errors = []
+    allow = set(allow_parts or [])
     with zipfile.ZipFile(source) as before, zipfile.ZipFile(output) as after:
         names, out_names = set(before.namelist()), set(after.namelist())
         if after.testzip():
@@ -26,7 +27,7 @@ def verify(source, output):
             errors.append('Duplicate output entries')
         missing = names - out_names
         changed = [n for n in sorted(names & out_names) if before.read(n) != after.read(n)]
-        unexpected = [n for n in changed if not (n.endswith('.rels') or n == '[Content_Types].xml')]
+        unexpected = [n for n in changed if not (n.endswith('.rels') or n == '[Content_Types].xml' or n in allow)]
         added = out_names - names
         for n in out_names:
             if n.endswith(('.xml', '.rels')):
@@ -76,6 +77,12 @@ def verify(source, output):
 
 
 if __name__ == '__main__':
-    report = verify(*sys.argv[1:])
+    import argparse
+    parser = argparse.ArgumentParser(description="Verify original/repair package pairs")
+    parser.add_argument("source")
+    parser.add_argument("output")
+    parser.add_argument("--allow-parts", nargs="*", default=[], help="Parts permitted to change (e.g. edited OLE/previews)")
+    args = parser.parse_args()
+    report = verify(args.source, args.output, allow_parts=args.allow_parts)
     print(json.dumps(report, indent=2))
     raise SystemExit(0 if report['passed'] else 1)
