@@ -335,8 +335,8 @@ public class LanguageManager: ObservableObject {
             return isEn ? "macOS System Integration Services" : "macOS 系統整合服務管理"
         case .integrationDesc:
             return isEn
-                ? "Manage Finder Quick Actions and PowerPoint Services menus registered in macOS for quick access directly from Finder or PowerPoint."
-                : "管理註冊於 macOS 系統中的「Finder 右鍵快速動作」與「PowerPoint 應用服務選單」，讓您平常在 Finder 或簡報中即可一鍵調用。"
+                ? "Install or remove the PowerPoint Services menu item registered in macOS, so you can edit a selected chart without leaving PowerPoint."
+                : "安裝或移除註冊於 macOS 的「PowerPoint 應用服務選單」，讓您在簡報中直接一鍵編輯選取的圖表。"
         case .installingMsg:
             return isEn ? "Installing integration scripts to system folders..." : "正在安裝整合腳本至系統資料夾..."
         case .uninstallingMsg:
@@ -347,12 +347,12 @@ public class LanguageManager: ObservableObject {
             return isEn ? "Uninstall Integration" : "移除系統整合服務"
         case .installSuccess:
             return isEn
-                ? "✔ System integration installed successfully! Registered in PowerPoint and Quick Actions."
-                : "✔ 系統整合安裝成功！已註冊至 PowerPoint 與系統服務。"
+                ? "✔ System integration installed successfully! Registered in the PowerPoint Services menu."
+                : "✔ 系統整合安裝成功！已註冊至 PowerPoint 服務選單。"
         case .uninstallSuccess:
             return isEn
-                ? "✔ Successfully removed all macOS system integration services (Quick Actions & menus)."
-                : "✔ 已成功移除所有 macOS 系統整合服務（右鍵快速動作與選單）。"
+                ? "✔ Successfully removed macOS system integration (PowerPoint Services menu)."
+                : "✔ 已成功移除 macOS 系統整合服務（PowerPoint 服務選單）。"
         case .doctorFailedAlert:
             return isEn ? "Diagnostics Execution Failed" : "診斷執行失敗"
         case .interfaceLanguage:

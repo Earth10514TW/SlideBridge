@@ -1,6 +1,6 @@
 -- SlideBridge AppleScript Handler for Microsoft PowerPoint Mac
 -- Enables one-click/hotkey editing of Origin charts in a Windows VM.
--- Compatible with AppleScriptTask (VBA) and macOS Shortcuts/Quick Actions.
+-- Compatible with AppleScriptTask (VBA) and the macOS Services menu.
 --
 -- This file is a TEMPLATE. scripts/install_mac_integration.sh substitutes
 -- __SLIDEBRIDGE_PROJECT_ROOT__ with the real checkout path before compiling,

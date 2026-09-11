@@ -1,6 +1,6 @@
 """Preflight checks for the Mac PowerPoint one-click flow.
 
-Run ``python3 -m slidebridge doctor`` before testing the Quick Action. A GUI
+Run ``python3 -m slidebridge doctor`` before testing the one-click flow. A GUI
 launched run fails opaquely -- PowerPoint only surfaces a modal alert -- so
 this command walks the same chain in the same order and reports each link:
 interpreter, project root, installed handler, hypervisor, running guest,
@@ -205,10 +205,14 @@ def check_handler() -> Check:
 
 
 def check_service() -> Check:
+    """The PowerPoint Services menu item, not a Finder Quick Action.
+
+    The Finder Quick Action was retired: the SwiftUI app covers batch repair.
+    """
     if SERVICE_DIR.is_dir():
-        return Check("Quick Action Service", OK, SERVICE_NAME)
+        return Check("PowerPoint Services menu", OK, SERVICE_NAME)
     return Check(
-        "Quick Action Service",
+        "PowerPoint Services menu",
         FAIL,
         f"{SERVICE_DIR} not found",
         "bash scripts/install_mac_integration.sh, then enable it in System Settings > Keyboard > "

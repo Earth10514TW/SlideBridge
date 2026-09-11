@@ -8,7 +8,7 @@ SlideBridge 的第一版是本機 CLI：掃描 `.pptx` 中的 EMF／WMF，使用
 
 ## 快速上手：macOS 原生應用程式與系統整合 (GUI)
 
-除了指令列之外，SlideBridge 提供基於 **SwiftUI 原生打造的 macOS 桌面應用程式** 與 **Finder 右鍵快速動作**：
+除了指令列之外，SlideBridge 提供 **SwiftUI 原生打造的 macOS 桌面應用程式**，以及註冊在 PowerPoint 服務選單中的一鍵編輯項目：
 
 1. **原生桌面 App (`dist/SlideBridge.app`)**：
    - **批次修復**：直接拖曳 `.pptx` 進入視窗，一鍵將損壞的 EMF 渲染為 300 DPI 高畫質 PNG，完整保留原始 OLE 二進位檔。
@@ -16,14 +16,12 @@ SlideBridge 的第一版是本機 CLI：掃描 `.pptx` 中的 EMF／WMF，使用
    - **環境診斷**：一鍵檢測 Python、PowerPoint、Inkscape、Parallels 虛擬機狀態，並可一鍵重新安裝系統整合。
    - 啟動方式：雙擊 `dist/SlideBridge.app`（或在終端機輸入 `open dist/SlideBridge.app`）。
 
-2. **Finder 右鍵快速動作 (Quick Action)**：
-   - 在 Finder 對任意 `.pptx` 檔案點右鍵 ➔ **快速動作 (Quick Actions)** ➔ **修復 PPT 圖片 (SlideBridge)**。
-   - 自動在同目錄產出 `<檔名>_fixed.pptx` 並發出系統通知，完全無須開啟終端機。
-
-3. **一鍵安裝所有 Mac 系統整合**：
+2. **一鍵安裝所有 Mac 系統整合**：
    ```sh
    bash scripts/install_mac_integration.sh
    ```
+
+批次修復請直接用原生 App 拖放；已移除過去的 Finder 右鍵快速動作（Automator 沙箱會擋下 shell 呼叫，且功能與 App 重疊）。
 
 ---
 
@@ -120,7 +118,7 @@ python3 -m slidebridge writeback-ole input.pptx \
 python3 -m slidebridge doctor
 ```
 
-它依實際失敗順序檢查：Python 版本、專案路徑、已安裝的 handler 是否指向這份 checkout、PowerPoint、Quick Action 服務、hypervisor CLI、執行中的 Windows guest、Windows helper。任何 `[FAIL]` 都會附上修復指令，並以非零狀態結束；`--json` 輸出機器可讀格式。
+它依實際失敗順序檢查：Python 版本、專案路徑、已安裝的 handler 是否指向這份 checkout、PowerPoint、PowerPoint 服務選單項目、hypervisor CLI、執行中的 Windows guest、Windows helper。任何 `[FAIL]` 都會附上修復指令，並以非零狀態結束；`--json` 輸出機器可讀格式。
 
 **所有檢查都在 macOS 端執行。** `Running Windows guest` 這一項只是向 Parallels 詢問「目前有哪些 VM 在執行中」，**不需要在 Windows 裡面安裝 Python 或任何東西**——Windows 端只需要原本就有的 Origin 與 `origin-bridge.exe`。這一項失敗時有三種不同意義，doctor 會分開回報：找不到 hypervisor、Parallels 裝了但無法查詢（通常是 Parallels Desktop 尚未啟動過）、以及 hypervisor 正常但沒有 VM 在跑。
 
@@ -145,17 +143,17 @@ python3 -m slidebridge doctor
 
 本專案提供跨平台混合管線：Python 核心引擎、Windows 原生 OLE Helper (`dist/origin-bridge.exe`)，以及 macOS 原生 SwiftUI 桌面 App (`dist/SlideBridge.app`)。已用真實 Origin95.Graph 簡報完成 EMF 轉換、輸出圖片檢視與 package 完整性驗證（第 4／5 頁共 5 個 OLE 位置、4 份嵌入資料）。Inkscape 1.4.4 ARM 原生 EMF 匯入全部崩潰，libemf2svg 1.8.1 中介路徑可完成轉換。修復後的簡報已在 Mac PowerPoint 正常顯示，Windows Origin 的雙擊編輯亦已驗證成功；線寬與旋轉文字（軸標題、上下標）的偏差已在原生回歸測試中修正。保留 OLE bytes 不等於已證明 Office 會接受所有變體；請在 Mac PowerPoint 檢視輸出，再於 Windows + Origin 驗證編輯流程。來源缺少預覽、預覽已損壞、外部 linked OLE 資料遺失時，無法重建原圖。數位簽章不會因修改後仍有效。
 
-自動測試使用合成 OOXML 與替身 renderer，驗證封裝與保留行為；真實樣本另外執行轉換與 package 比對。樣本與產物放在忽略的 `dist/`、`bin/` 與 `.cache/`，不提交 Git。目前共 134 項 Python 單元測試（含 9 項原生 EMF 渲染測試）。
+自動測試使用合成 OOXML 與替身 renderer，驗證封裝與保留行為；真實樣本另外執行轉換與 package 比對。樣本與產物放在忽略的 `dist/`、`bin/` 與 `.cache/`，不提交 Git。目前共 147 項 Python 單元測試（含 14 項原生 EMF 渲染測試）。
 
 ```sh
-# 預設執行 125 項；9 項原生 EMF 測試會因未指定後端而 skip
+# 預設執行 133 項；14 項原生 EMF 測試會因未指定後端而 skip
 python3 -m unittest discover -s tests -v
 
-# 指定專案內已修補的轉換器後，134 項全數執行
+# 指定專案內已修補的轉換器後，147 項全數執行
 SLIDEBRIDGE_TEST_EMF2SVG=bin/emf2svg-conv python3 -m unittest discover -s tests -v
 ```
 
-後續階段：真實 Origin 樣本回歸 → SVG + PNG fallback → macOS 拖放介面 → PowerPoint Add-in。核心目前依賴本機 Inkscape；移植到 Office WebView 尚需設計轉換服務或 WASM 後端。
+已完成：真實 Origin 樣本回歸、SVG + PNG fallback、macOS 拖放介面。尚未開始：PowerPoint Add-in。核心目前依賴本機 Inkscape；移植到 Office WebView 尚需設計轉換服務或 WASM 後端。
 
 ## 技術依據
 

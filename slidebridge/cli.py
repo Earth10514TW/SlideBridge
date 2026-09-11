@@ -10,7 +10,7 @@ from .bridge import prepare_ole, writeback_ole, list_ole_objects, edit_presentat
 from .locate import ensure_login_path, find_executable
 
 #: Install locations for Inkscape, tried when it is not on PATH. Needed because
-#: GUI-launched runs (PowerPoint Quick Action, double-clicked .app) do not
+#: GUI-launched runs (PowerPoint Services menu, double-clicked .app) do not
 #: inherit Homebrew's PATH.
 _INKSCAPE_CANDIDATES = (
     "/Applications/Inkscape.app/Contents/MacOS/inkscape",

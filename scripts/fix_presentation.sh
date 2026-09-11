@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# fix_presentation.sh: CLI and Finder entrypoint to repair EMF images in a PowerPoint file.
+# fix_presentation.sh: CLI entrypoint to repair EMF images in a PowerPoint file.
 #
 set -euo pipefail
 

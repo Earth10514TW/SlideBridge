@@ -3,7 +3,7 @@
 # edit_active_presentation.sh: Connect to the active PowerPoint window,
 # edit the selected chart in a Windows VM, and auto-reload the presentation.
 #
-# This script is invoked from PowerPoint (Quick Action Service / VBA) and from
+# This script is invoked from PowerPoint (Services menu / VBA) and from
 # a double-clicked .app. Both are GUI-launched, so they inherit launchd's
 # minimal PATH.
 #

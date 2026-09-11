@@ -96,7 +96,7 @@ python3 -m slidebridge writeback-ole input.pptx \
 
 ### GUI 啟動時的 PATH 問題
 
-從 PowerPoint（Quick Action／VBA）或雙擊 `.app` 觸發時，行程繼承的是 launchd 的精簡環境，PATH 通常為 `/usr/bin:/bin:/usr/sbin:/sbin`，**不含 `/usr/local/bin` 與 `/opt/homebrew/bin`**。這會讓 `shutil.which("prlctl")` 回傳 `None`，並產生「Parallels Desktop 似乎未安裝」的誤導訊息。
+從 PowerPoint（服務選單／VBA）或雙擊 `.app` 觸發時，行程繼承的是 launchd 的精簡環境，PATH 通常為 `/usr/bin:/bin:/usr/sbin:/sbin`，**不含 `/usr/local/bin` 與 `/opt/homebrew/bin`**。這會讓 `shutil.which("prlctl")` 回傳 `None`，並產生「Parallels Desktop 似乎未安裝」的誤導訊息。
 
 `slidebridge/locate.py` 解決此問題：
 

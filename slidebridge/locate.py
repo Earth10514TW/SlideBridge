@@ -2,8 +2,8 @@
 
 Why this exists
 ---------------
-On macOS, processes started from the GUI (PowerPoint, the Quick Action
-Service, a double-clicked ``.app``) inherit launchd's minimal environment.
+On macOS, processes started from the GUI (PowerPoint, the Services menu
+item, a double-clicked ``.app``) inherit launchd's minimal environment.
 That PATH is typically ``/usr/bin:/bin:/usr/sbin:/sbin`` and does **not**
 include ``/usr/local/bin`` or ``/opt/homebrew/bin``, so ``shutil.which``
 fails to find tools that work perfectly in a terminal -- even though

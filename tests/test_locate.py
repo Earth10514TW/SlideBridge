@@ -1,6 +1,6 @@
 """Tests for portable executable discovery.
 
-The behaviour that matters: a GUI-launched process (PowerPoint, Quick Action,
+The behaviour that matters: a GUI-launched process (PowerPoint, Services menu,
 double-clicked .app) inherits launchd's minimal PATH and must still find tools
 that live in Homebrew or /usr/local/bin.
 """
