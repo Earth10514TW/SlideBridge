@@ -334,9 +334,15 @@ class OriginHost final : public IOleClientSite,
       return false;
     }
 
+    // 1. Tell Origin to commit its active document so IPersistStorage gets the user's latest edits.
+    // 2. Export PNG with transparent background:
+    //    expG2img has tb:=1 (transparent background) and type:=0 (PNG).
+    //    Also call expGraph with tr.Export.Image.Transparent:=1 and export SVG.
     std::wstring labTalkCmd =
-        L"expGraph type:=png filename:=\"preview\" path:=\"" + sessionDir +
-        L"\" overwrite:=replace;";
+        L"doc -s; "
+        L"expG2img type:=0 name:=\"preview\" path:=\"" + sessionDir + L"\" tb:=1; "
+        L"expGraph type:=png filename:=\"preview\" path:=\"" + sessionDir + L"\" overwrite:=replace tr.Export.Image.Transparent:=1; "
+        L"expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDir + L"\" overwrite:=replace;";
 
     BSTR bstrCmd = SysAllocString(labTalkCmd.c_str());
     if (!bstrCmd) {
@@ -488,10 +494,51 @@ class OriginHost final : public IOleClientSite,
     return hr;
   }
 
+  std::wstring GetSessionDirectory() const {
+    return GetDirectoryOf(outputBasePath_);
+  }
+
   void DrawPreview(HDC hdc, const RECT& targetRect) {
     if (!object_) {
       return;
     }
+    const std::wstring manualPreview = ManualPreviewPath();
+    if (!manualPreview.empty() && FileExists(manualPreview)) {
+      Gdiplus::Bitmap bmp(manualPreview.c_str());
+      if (bmp.GetLastStatus() == Gdiplus::Ok && bmp.GetWidth() > 0 && bmp.GetHeight() > 0) {
+        int availW = targetRect.right - targetRect.left;
+        int availH = targetRect.bottom - targetRect.top;
+        if (availW > 0 && availH > 0) {
+          double extentAspect = static_cast<double>(bmp.GetWidth()) / static_cast<double>(bmp.GetHeight());
+          double targetAspect = static_cast<double>(availW) / static_cast<double>(availH);
+          int drawW = availW;
+          int drawH = availH;
+          if (extentAspect > targetAspect) {
+            drawH = static_cast<int>(availW / extentAspect);
+          } else {
+            drawW = static_cast<int>(availH * extentAspect);
+          }
+          RECT drawRect;
+          drawRect.left = targetRect.left + (availW - drawW) / 2;
+          drawRect.top = targetRect.top + (availH - drawH) / 2;
+          drawRect.right = drawRect.left + drawW;
+          drawRect.bottom = drawRect.top + drawH;
+
+          HBRUSH whiteBrush = static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH));
+          FillRect(hdc, &drawRect, whiteBrush);
+
+          Gdiplus::Graphics g(hdc);
+          g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+          g.DrawImage(&bmp, drawRect.left, drawRect.top, drawW, drawH);
+
+          HBRUSH frameBrush = CreateSolidBrush(RGB(180, 180, 180));
+          FrameRect(hdc, &drawRect, frameBrush);
+          DeleteObject(frameBrush);
+          return;
+        }
+      }
+    }
+
     SIZEL sizel{};
     HRESULT hr = object_->GetExtent(DVASPECT_CONTENT, &sizel);
     RECT drawRect = targetRect;
@@ -1047,6 +1094,18 @@ class EditApp final {
         }
         return 0;
 
+      case WM_ACTIVATE:
+        if (LOWORD(wParam) != WA_INACTIVE && host_ && host_->HasObject()) {
+          const std::wstring sessionDir = host_->GetSessionDirectory();
+          if (!sessionDir.empty()) {
+            if (host_->AutoExportOriginGraph(sessionDir)) {
+              InvalidateRect(window_, nullptr, TRUE);
+              SetStatus(L"Preview updated from Origin. Click 'Save and Close' when ready.");
+            }
+          }
+        }
+        return 0;
+
       case WM_COMMAND:
         // Automation may send WM_COMMAND synchronously from another process.
         // COM callouts in that input-sync context fail with RPC_E_CANTCALLOUT_ININPUTSYNCCALL.
@@ -1097,20 +1156,20 @@ class EditApp final {
 
   void CreateControls() {
     CreateWindowW(L"BUTTON", L"Open in Origin", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                  16, 16, 150, 32, window_,
+                  16, 16, 140, 32, window_,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOpenButton)),
                   GetModuleHandleW(nullptr), nullptr);
-    CreateWindowW(L"BUTTON", L"Save", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                  176, 16, 100, 32, window_,
+    CreateWindowW(L"BUTTON", L"Save & Refresh", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                  166, 16, 140, 32, window_,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveButton)),
                   GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", L"Save and Close", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                  286, 16, 140, 32, window_,
+                  316, 16, 140, 32, window_,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveCloseButton)),
                   GetModuleHandleW(nullptr), nullptr);
     discardButton_ = CreateWindowW(
         L"BUTTON", L"Discard and Close", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        436, 16, 150, 32, window_,
+        466, 16, 150, 32, window_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDiscardCloseButton)),
         GetModuleHandleW(nullptr), nullptr);
     EnableWindow(discardButton_, FALSE);
@@ -1142,6 +1201,8 @@ class EditApp final {
       }
       return false;
     }
+    InvalidateRect(window_, nullptr, TRUE);
+    SetStatus(L"Saved! Preview updated above. Click 'Save and Close' to write back.");
     return true;
   }
 
