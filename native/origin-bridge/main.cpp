@@ -1,0 +1,874 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef UNICODE
+#define UNICODE
+#endif
+#ifndef _UNICODE
+#define _UNICODE
+#endif
+
+#include <windows.h>
+#include <ole2.h>
+#include <oleidl.h>
+#include <objbase.h>
+
+#include <algorithm>
+#include <cwchar>
+#include <iostream>
+#include <iterator>
+#include <string>
+#include <utility>
+
+#include "save_sequence.h"
+
+namespace {
+
+constexpr wchar_t kOriginProgId[] = L"Origin95.Graph";
+constexpr wchar_t kWindowClass[] = L"SlideBridgeOriginHost";
+constexpr wchar_t kWindowTitle[] = L"SlideBridge - Origin host";
+constexpr int kOpenButton = 1001;
+constexpr int kSaveButton = 1002;
+constexpr int kSaveCloseButton = 1003;
+constexpr int kStatusControl = 1004;
+constexpr int kDiscardCloseButton = 1005;
+
+void Log(const std::wstring& message) {
+  std::wcout << message << std::endl;
+}
+
+void LogHr(const std::wstring& operation, HRESULT hr) {
+  std::wcout << operation << L": HRESULT=0x" << std::hex
+             << static_cast<unsigned long>(hr) << std::dec << std::endl;
+}
+
+std::wstring GuidText(REFCLSID clsid) {
+  wchar_t buffer[64]{};
+  if (StringFromGUID2(clsid, buffer, static_cast<int>(std::size(buffer))) == 0) {
+    return L"{invalid-guid}";
+  }
+  return buffer;
+}
+
+bool IsEqualGuid(REFCLSID left, REFCLSID right) {
+  return IsEqualCLSID(left, right) != FALSE;
+}
+
+HRESULT ReadRootClsid(IStorage* storage, CLSID* clsid) {
+  if (!storage || !clsid) {
+    return E_INVALIDARG;
+  }
+  STATSTG stat{};
+  HRESULT hr = storage->Stat(&stat, STATFLAG_NONAME);
+  if (FAILED(hr)) {
+    return hr;
+  }
+  *clsid = stat.clsid;
+  return S_OK;
+}
+
+HRESULT OpenStorage(const std::wstring& path, DWORD mode, IStorage** result) {
+  if (!result) {
+    return E_INVALIDARG;
+  }
+  *result = nullptr;
+  return StgOpenStorage(path.c_str(), nullptr, mode, nullptr, 0, result);
+}
+
+HRESULT ParseClsid(const std::wstring& value, CLSID* clsid) {
+  if (!clsid) {
+    return E_INVALIDARG;
+  }
+  return CLSIDFromString(const_cast<LPOLESTR>(value.c_str()), clsid);
+}
+
+// This check deliberately uses only the storage metadata and the registered
+// Origin95.Graph ProgID.  It runs before OleLoad, which is the first call that
+// can activate the server named by the compound file.
+HRESULT CheckOriginClass(IStorage* storage, REFCLSID requested, CLSID* rootOut) {
+  CLSID root{};
+  HRESULT hr = ReadRootClsid(storage, &root);
+  if (FAILED(hr)) {
+    return hr;
+  }
+  CLSID registered{};
+  hr = CLSIDFromProgID(kOriginProgId, &registered);
+  if (FAILED(hr)) {
+    LogHr(L"CLSIDFromProgID(Origin95.Graph) is not registered", hr);
+    return hr;
+  }
+  if (!IsEqualGuid(root, requested) || !IsEqualGuid(registered, requested)) {
+    Log(L"Origin class gate rejected the storage: root=" + GuidText(root) +
+        L", requested=" + GuidText(requested) +
+        L", registered=" + GuidText(registered));
+    return CLASS_E_CLASSNOTAVAILABLE;
+  }
+  if (rootOut) {
+    *rootOut = root;
+  }
+  return S_OK;
+}
+
+class OriginHost final : public IOleClientSite,
+                         public IOleInPlaceSite,
+                         public IOleInPlaceFrame {
+ public:
+  OriginHost(HWND owner, HWND status, IStorage* storage)
+      : refCount_(1), owner_(owner), status_(status), storage_(storage) {
+    if (storage_) {
+      storage_->AddRef();
+    }
+  }
+
+  OriginHost(const OriginHost&) = delete;
+  OriginHost& operator=(const OriginHost&) = delete;
+
+  ~OriginHost() {
+    ReleaseObject();
+    if (storage_) {
+      storage_->Release();
+      storage_ = nullptr;
+    }
+  }
+
+  HRESULT LoadObject() {
+    if (!storage_) {
+      return E_UNEXPECTED;
+    }
+    if (object_) {
+      return S_FALSE;
+    }
+    HRESULT hr = OleLoad(storage_, IID_IOleObject,
+                         static_cast<IOleClientSite*>(this),
+                         reinterpret_cast<void**>(&object_));
+    if (FAILED(hr)) {
+      LogHr(L"OleLoad", hr);
+      return hr;
+    }
+    siteAttached_ = true;
+    hr = object_->SetClientSite(static_cast<IOleClientSite*>(this));
+    if (FAILED(hr)) {
+      LogHr(L"IOleObject::SetClientSite", hr);
+      ReleaseObject();
+      return hr;
+    }
+    hr = object_->SetHostNames(L"SlideBridge", L"Origin95.Graph");
+    if (FAILED(hr)) {
+      LogHr(L"IOleObject::SetHostNames", hr);
+      ReleaseObject();
+      return hr;
+    }
+    hr = OleSetContainedObject(object_, TRUE);
+    if (FAILED(hr)) {
+      LogHr(L"OleSetContainedObject", hr);
+      ReleaseObject();
+      return hr;
+    }
+    return S_OK;
+  }
+
+  HRESULT OpenInOrigin() {
+    if (!object_) {
+      return E_UNEXPECTED;
+    }
+    RECT rect{};
+    if (owner_) {
+      GetClientRect(owner_, &rect);
+    }
+    if (rect.right <= rect.left || rect.bottom <= rect.top) {
+      rect.left = 0;
+      rect.top = 0;
+      rect.right = 800;
+      rect.bottom = 600;
+    }
+    HRESULT hr = object_->DoVerb(OLEIVERB_OPEN, nullptr,
+                                 static_cast<IOleClientSite*>(this), 0,
+                                 owner_, &rect);
+    if (FAILED(hr)) {
+      LogHr(L"IOleObject::DoVerb(OLEIVERB_OPEN)", hr);
+      return hr;
+    }
+    opened_ = true;
+    SetStatus(L"Origin opened. Use Save to commit changes.");
+    return S_OK;
+  }
+
+  HRESULT Run() {
+    if (!object_) {
+      return E_UNEXPECTED;
+    }
+    HRESULT hr = OleRun(object_);
+    if (FAILED(hr)) {
+      LogHr(L"OleRun", hr);
+    }
+    return hr;
+  }
+
+  // This is the one save path used by the UI and by IOleClientSite::SaveObject.
+  // It mirrors OleSave's persistence sequence, but keeps SaveCompleted in a
+  // finally-style path after IPersistStorage::Save has been entered.  The
+  // guard prevents a server callback during Save from recursively entering
+  // the same operation.
+  HRESULT Save() {
+    if (saving_) {
+      return RPC_E_CALL_REJECTED;
+    }
+    if (persistencePoisoned_) {
+      SetStatus(L"Persistence is unusable; restart this edit session.");
+      return STG_E_REVERTED;
+    }
+    if (!object_ || !storage_) {
+      return E_UNEXPECTED;
+    }
+    saving_ = true;
+    IPersistStorage* persist = nullptr;
+    HRESULT hr = object_->QueryInterface(IID_IPersistStorage,
+                                         reinterpret_cast<void**>(&persist));
+    if (SUCCEEDED(hr)) {
+      CLSID clsid{};
+      hr = RunPersistenceSave<HRESULT>(
+          [](HRESULT result) { return SUCCEEDED(result); },
+          [&] { return persist->GetClassID(&clsid); },
+          [&] { return WriteClassStg(storage_, clsid); },
+          [&] { return persist->Save(storage_, TRUE); },
+          [&] { return storage_->Commit(STGC_DEFAULT); },
+          [&] { return persist->SaveCompleted(nullptr); },
+          persistencePoisoned_, [&](HRESULT completionHr) {
+            LogHr(L"IPersistStorage::SaveCompleted (persistence unusable)",
+                  completionHr);
+          }, STG_E_REVERTED);
+      persist->Release();
+    }
+    saving_ = false;
+    if (SUCCEEDED(hr)) {
+      explicitlySaved_ = true;
+      SetStatus(L"Saved to the output storage.");
+    } else {
+      LogHr(L"Save", hr);
+      if (persistencePoisoned_) {
+        SetStatus(L"SaveCompleted failed; persistence is unusable. Restart this edit session.");
+      }
+    }
+    return hr;
+  }
+
+  HRESULT CloseAfterSave() {
+    if (!object_) {
+      return S_FALSE;
+    }
+    if (!explicitlySaved_) {
+      return E_ACCESSDENIED;
+    }
+    HRESULT hr = object_->Close(OLECLOSE_NOSAVE);
+    if (FAILED(hr)) {
+      LogHr(L"IOleObject::Close(OLECLOSE_NOSAVE)", hr);
+      return hr;
+    }
+    closed_ = true;
+    SetStatus(L"Origin closed after a successful save.");
+    return S_OK;
+  }
+
+  // This is an explicit discard escape hatch for a poisoned persistence
+  // lifecycle.  The caller must obtain a deliberate user confirmation before
+  // invoking it; the input storage is never opened for writing.
+  HRESULT DiscardAfterPersistenceFailure() {
+    if (!object_) {
+      return S_FALSE;
+    }
+    if (!persistencePoisoned_) {
+      return E_ACCESSDENIED;
+    }
+    HRESULT hr = object_->Close(OLECLOSE_NOSAVE);
+    if (FAILED(hr)) {
+      LogHr(L"IOleObject::Close(OLECLOSE_NOSAVE) after discard", hr);
+      return hr;
+    }
+    closed_ = true;
+    SetStatus(L"Discarded unsaved changes; the input remains unchanged.");
+    return S_OK;
+  }
+
+  bool HasObject() const { return object_ != nullptr; }
+  bool IsClosed() const { return closed_; }
+  bool PersistencePoisoned() const { return persistencePoisoned_; }
+
+  void ReleaseObject() {
+    if (!object_) {
+      return;
+    }
+    // Never issue OLECLOSE_NOSAVE here: callers must first complete an
+    // explicit successful save through Save().  Detaching the site breaks the
+    // object -> client-site reference before releasing our object reference.
+    if (siteAttached_) {
+      object_->SetClientSite(nullptr);
+      siteAttached_ = false;
+    }
+    object_->Release();
+    object_ = nullptr;
+    closed_ = true;
+  }
+
+  void SetStatus(const std::wstring& message) {
+    Log(message);
+    if (status_) {
+      SetWindowTextW(status_, message.c_str());
+    }
+  }
+
+  // IUnknown
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** object) override {
+    if (!object) {
+      return E_POINTER;
+    }
+    *object = nullptr;
+    if (riid == IID_IUnknown || riid == IID_IOleClientSite) {
+      *object = static_cast<IOleClientSite*>(this);
+    } else if (riid == IID_IOleInPlaceSite || riid == IID_IOleWindow) {
+      *object = static_cast<IOleInPlaceSite*>(this);
+    } else if (riid == IID_IOleInPlaceFrame) {
+      *object = static_cast<IOleInPlaceFrame*>(this);
+    } else {
+      return E_NOINTERFACE;
+    }
+    AddRef();
+    return S_OK;
+  }
+
+  ULONG STDMETHODCALLTYPE AddRef() override {
+    return static_cast<ULONG>(InterlockedIncrement(&refCount_));
+  }
+
+  ULONG STDMETHODCALLTYPE Release() override {
+    ULONG count = static_cast<ULONG>(InterlockedDecrement(&refCount_));
+    if (count == 0) {
+      delete this;
+    }
+    return count;
+  }
+
+  // IOleClientSite
+  HRESULT STDMETHODCALLTYPE SaveObject() override { return Save(); }
+
+  HRESULT STDMETHODCALLTYPE GetMoniker(DWORD, DWORD, IMoniker**) override {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetContainer(IOleContainer** container) override {
+    if (container) {
+      *container = nullptr;
+    }
+    return E_NOINTERFACE;
+  }
+
+  HRESULT STDMETHODCALLTYPE ShowObject() override { return S_OK; }
+
+  HRESULT STDMETHODCALLTYPE OnShowWindow(BOOL show) override {
+    SetStatus(show ? L"Origin server window shown. Save explicitly to commit."
+                    : L"Origin server window hidden. The file remains open.");
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE RequestNewObjectLayout() override { return E_NOTIMPL; }
+
+  // IOleWindow / IOleInPlaceSite
+  HRESULT STDMETHODCALLTYPE GetWindow(HWND* window) override {
+    if (!window) {
+      return E_POINTER;
+    }
+    *window = owner_;
+    return owner_ ? S_OK : E_FAIL;
+  }
+
+  HRESULT STDMETHODCALLTYPE ContextSensitiveHelp(BOOL) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE CanInPlaceActivate() override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE OnInPlaceActivate() override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE OnUIActivate() override { return S_OK; }
+
+  HRESULT STDMETHODCALLTYPE GetWindowContext(
+      IOleInPlaceFrame** frame, IOleInPlaceUIWindow** docWindow,
+      LPRECT posRect, LPRECT clipRect,
+      LPOLEINPLACEFRAMEINFO frameInfo) override {
+    if (!frame || !docWindow || !posRect || !clipRect || !frameInfo) {
+      return E_POINTER;
+    }
+    *frame = static_cast<IOleInPlaceFrame*>(this);
+    (*frame)->AddRef();
+    *docWindow = nullptr;
+    RECT rect{};
+    if (owner_) {
+      GetClientRect(owner_, &rect);
+    }
+    if (rect.right <= rect.left || rect.bottom <= rect.top) {
+      rect.right = 800;
+      rect.bottom = 600;
+    }
+    *posRect = rect;
+    *clipRect = rect;
+    frameInfo->cb = sizeof(*frameInfo);
+    frameInfo->fMDIApp = FALSE;
+    frameInfo->hwndFrame = owner_;
+    frameInfo->haccel = nullptr;
+    frameInfo->cAccelEntries = 0;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE Scroll(SIZE) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE OnUIDeactivate(BOOL) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE OnInPlaceDeactivate() override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE DiscardUndoState() override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE DeactivateAndUndo() override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE OnPosRectChange(LPCRECT rect) override {
+    if (!object_ || !rect) {
+      return E_INVALIDARG;
+    }
+    IOleInPlaceObject* inPlace = nullptr;
+    HRESULT hr = object_->QueryInterface(IID_IOleInPlaceObject,
+                                         reinterpret_cast<void**>(&inPlace));
+    if (SUCCEEDED(hr)) {
+      hr = inPlace->SetObjectRects(rect, rect);
+      inPlace->Release();
+    }
+    return hr;
+  }
+
+  // IOleInPlaceFrame
+  HRESULT STDMETHODCALLTYPE GetBorder(LPRECT border) override {
+    if (!border || !owner_) {
+      return E_INVALIDARG;
+    }
+    GetClientRect(owner_, border);
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE RequestBorderSpace(LPCBORDERWIDTHS) override { return INPLACE_E_NOTOOLSPACE; }
+  HRESULT STDMETHODCALLTYPE SetBorderSpace(LPCBORDERWIDTHS) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE SetActiveObject(IOleInPlaceActiveObject*, LPCOLESTR) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE InsertMenus(HMENU, LPOLEMENUGROUPWIDTHS) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE SetMenu(HMENU, HOLEMENU, HWND) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE RemoveMenus(HMENU) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE SetStatusText(LPCOLESTR text) override {
+    if (text) {
+      SetStatus(text);
+    }
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE EnableModeless(BOOL) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE TranslateAccelerator(LPMSG, WORD) override { return E_NOTIMPL; }
+
+ private:
+  LONG refCount_;
+  HWND owner_;
+  HWND status_;
+  IStorage* storage_ = nullptr;
+  IOleObject* object_ = nullptr;
+  bool siteAttached_ = false;
+  bool opened_ = false;
+  bool explicitlySaved_ = false;
+  bool closed_ = false;
+  bool saving_ = false;
+  bool persistencePoisoned_ = false;
+};
+
+class EditApp final {
+ public:
+  EditApp(std::wstring output, IStorage* storage)
+      : output_(std::move(output)), storage_(storage) {
+    if (storage_) {
+      storage_->AddRef();
+    }
+  }
+
+  EditApp(const EditApp&) = delete;
+  EditApp& operator=(const EditApp&) = delete;
+
+  ~EditApp() {
+    if (host_) {
+      host_->ReleaseObject();
+      host_->Release();
+      host_ = nullptr;
+    }
+    if (storage_) {
+      storage_->Release();
+      storage_ = nullptr;
+    }
+  }
+
+  HRESULT CreateAndShow() {
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = &EditApp::WindowProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = kWindowClass;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    RegisterClassW(&wc);
+
+    RECT desired{0, 0, 960, 720};
+    AdjustWindowRect(&desired, WS_OVERLAPPEDWINDOW, FALSE);
+    window_ = CreateWindowExW(0, kWindowClass, kWindowTitle,
+                              WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                              CW_USEDEFAULT, CW_USEDEFAULT,
+                              desired.right - desired.left,
+                              desired.bottom - desired.top,
+                              nullptr, nullptr, wc.hInstance, this);
+    if (!window_) {
+      HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
+      LogHr(L"CreateWindowExW", hr);
+      return hr;
+    }
+    ShowWindow(window_, SW_SHOW);
+    UpdateWindow(window_);
+
+    MSG message{};
+    while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
+    return exitCode_;
+  }
+
+ private:
+  static LRESULT CALLBACK WindowProc(HWND window, UINT message,
+                                     WPARAM wParam, LPARAM lParam) {
+    EditApp* app = reinterpret_cast<EditApp*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+      auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+      app = static_cast<EditApp*>(create->lpCreateParams);
+      SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
+      app->window_ = window;
+    }
+    if (!app) {
+      return DefWindowProcW(window, message, wParam, lParam);
+    }
+    return app->HandleMessage(message, wParam, lParam);
+  }
+
+  LRESULT HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+      case WM_CREATE:
+        CreateControls();
+        host_ = new OriginHost(window_, status_, storage_);
+        return 0;
+
+      case WM_SHOWWINDOW:
+        if (wParam && !openAttempted_) {
+          openAttempted_ = true;
+          HRESULT hr = host_->LoadObject();
+          if (SUCCEEDED(hr)) {
+            hr = host_->OpenInOrigin();
+          }
+          if (FAILED(hr)) {
+            exitCode_ = hr;
+            SetStatus(L"Unable to open the Origin object. Close this window.");
+          }
+        }
+        return 0;
+
+      case WM_COMMAND:
+        // Automation may send WM_COMMAND synchronously from another process.
+        // COM callouts in that input-sync context fail with RPC_E_CANTCALLOUT_ININPUTSYNCCALL.
+        // Execute OLE work on our own posted-message turn instead.
+        if (HIWORD(wParam) == BN_CLICKED) {
+          PostMessageW(window_, WM_APP + 1, wParam, 0);
+        }
+        return 0;
+
+      case WM_APP + 1:
+        if (HIWORD(wParam) == BN_CLICKED) {
+          switch (LOWORD(wParam)) {
+            case kOpenButton:
+              if (host_) {
+                host_->OpenInOrigin();
+              }
+              return 0;
+            case kSaveButton:
+              SaveObject();
+              return 0;
+            case kSaveCloseButton:
+              if (SaveObject()) {
+                CloseWindowAfterSave();
+              }
+              return 0;
+            case kDiscardCloseButton:
+              DiscardAndClose();
+              return 0;
+            default:
+              break;
+          }
+        }
+        break;
+
+      case WM_CLOSE:
+        PostMessageW(window_, WM_APP + 1, kSaveCloseButton, 0);
+        return 0;
+
+      case WM_DESTROY:
+        PostQuitMessage(exitCode_ == S_OK ? 0 : static_cast<int>(exitCode_));
+        return 0;
+
+      default:
+        break;
+    }
+    return DefWindowProcW(window_, message, wParam, lParam);
+  }
+
+  void CreateControls() {
+    CreateWindowW(L"BUTTON", L"Open in Origin", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                  16, 16, 150, 32, window_,
+                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOpenButton)),
+                  GetModuleHandleW(nullptr), nullptr);
+    CreateWindowW(L"BUTTON", L"Save", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                  176, 16, 100, 32, window_,
+                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveButton)),
+                  GetModuleHandleW(nullptr), nullptr);
+    CreateWindowW(L"BUTTON", L"Save and Close", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                  286, 16, 140, 32, window_,
+                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveCloseButton)),
+                  GetModuleHandleW(nullptr), nullptr);
+    discardButton_ = CreateWindowW(
+        L"BUTTON", L"Discard and Close", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        436, 16, 150, 32, window_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDiscardCloseButton)),
+        GetModuleHandleW(nullptr), nullptr);
+    EnableWindow(discardButton_, FALSE);
+    status_ = CreateWindowW(L"STATIC", L"Loading...", WS_CHILD | WS_VISIBLE,
+                            16, 64, 900, 28, window_,
+                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusControl)),
+                            GetModuleHandleW(nullptr), nullptr);
+  }
+
+  void SetStatus(const std::wstring& status) {
+    Log(status);
+    if (status_) {
+      SetWindowTextW(status_, status.c_str());
+    }
+  }
+
+  bool SaveObject() {
+    if (!host_ || !host_->HasObject()) {
+      SetStatus(L"No Origin object is loaded.");
+      return true;
+    }
+    HRESULT hr = host_->Save();
+    if (FAILED(hr)) {
+      if (host_->PersistencePoisoned()) {
+        EnableWindow(discardButton_, TRUE);
+        SetStatus(L"Persistence is unusable; confirm Discard and Close to abandon this output copy.");
+      } else {
+        SetStatus(L"Save failed; the window remains open.");
+      }
+      return false;
+    }
+    return true;
+  }
+
+  void CloseWindowAfterSave() {
+    if (!host_) {
+      DestroyWindow(window_);
+      return;
+    }
+    HRESULT hr = host_->CloseAfterSave();
+    if (FAILED(hr)) {
+      SetStatus(L"Origin did not close after saving; the window remains open.");
+      return;
+    }
+    DestroyWindow(window_);
+  }
+
+  void DiscardAndClose() {
+    if (!host_ || !host_->HasObject()) {
+      DestroyWindow(window_);
+      return;
+    }
+    if (!host_->PersistencePoisoned()) {
+      SetStatus(L"Discard is available only after a failed SaveCompleted lifecycle.");
+      return;
+    }
+    int answer = MessageBoxW(
+        window_,
+        L"Discard unsaved changes and close? Only the disposable output copy will be abandoned; the input remains unchanged.",
+        L"Confirm discard", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+    if (answer != IDYES) {
+      return;
+    }
+    HRESULT hr = host_->DiscardAfterPersistenceFailure();
+    if (FAILED(hr)) {
+      SetStatus(L"Discard failed; the window remains open.");
+      return;
+    }
+    DestroyWindow(window_);
+  }
+
+  std::wstring output_;
+  IStorage* storage_ = nullptr;
+  HWND window_ = nullptr;
+  HWND status_ = nullptr;
+  HWND discardButton_ = nullptr;
+  OriginHost* host_ = nullptr;
+  HRESULT exitCode_ = S_OK;
+  bool openAttempted_ = false;
+};
+
+HRESULT RunProbe(const std::wstring& input, const std::wstring& output,
+                REFCLSID requested) {
+  if (!CopyFileW(input.c_str(), output.c_str(), TRUE)) {
+    HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
+    LogHr(L"CopyFileW (output must not already exist)", hr);
+    return hr;
+  }
+  IStorage* storage = nullptr;
+  HRESULT hr = OpenStorage(output, STGM_READWRITE | STGM_SHARE_EXCLUSIVE, &storage);
+  if (FAILED(hr)) {
+    LogHr(L"StgOpenStorage(output)", hr);
+    return hr;
+  }
+  hr = CheckOriginClass(storage, requested, nullptr);
+  if (FAILED(hr)) {
+    storage->Release();
+    return hr;
+  }
+  Log(L"probe: LOAD");
+  auto* host = new OriginHost(nullptr, nullptr, storage);
+  storage->Release();
+  hr = host->LoadObject();
+  if (SUCCEEDED(hr)) {
+    Log(L"probe: OleRun");
+    hr = host->Run();
+  }
+  if (SUCCEEDED(hr)) {
+    Log(L"probe: Save");
+    hr = host->Save();
+  }
+  if (SUCCEEDED(hr)) {
+    Log(L"probe: Close");
+    hr = host->CloseAfterSave();
+  }
+  host->ReleaseObject();
+  host->Release();
+  if (FAILED(hr)) {
+    return hr;
+  }
+
+  Log(L"probe: storage roundtrip (LOAD -> OleRun -> Save -> Close -> reload -> Close)");
+  storage = nullptr;
+  hr = OpenStorage(output, STGM_READWRITE | STGM_SHARE_EXCLUSIVE, &storage);
+  if (FAILED(hr)) {
+    LogHr(L"StgOpenStorage(reload output)", hr);
+    return hr;
+  }
+  hr = CheckOriginClass(storage, requested, nullptr);
+  if (SUCCEEDED(hr)) {
+    auto* reloaded = new OriginHost(nullptr, nullptr, storage);
+    storage->Release();
+    storage = nullptr;
+    hr = reloaded->LoadObject();
+    if (SUCCEEDED(hr)) {
+      // The first lifecycle has already saved.  This second object is only a
+      // load/close roundtrip check and is deliberately not called an edit or
+      // visual verification.
+      reloaded->SetStatus(L"probe: reloaded output; saving and closing roundtrip object");
+      hr = reloaded->Save();
+      if (SUCCEEDED(hr)) {
+        hr = reloaded->CloseAfterSave();
+      }
+    }
+    reloaded->ReleaseObject();
+    reloaded->Release();
+  }
+  if (storage) {
+    storage->Release();
+  }
+  if (SUCCEEDED(hr)) {
+    Log(L"probe: storage roundtrip complete; edit/visual verification not claimed");
+  } else {
+    LogHr(L"probe reload", hr);
+  }
+  return hr;
+}
+
+HRESULT RunInspect(const std::wstring& input) {
+  IStorage* storage = nullptr;
+  HRESULT hr = OpenStorage(input, STGM_READ | STGM_SHARE_DENY_WRITE, &storage);
+  if (FAILED(hr)) {
+    LogHr(L"StgOpenStorage(inspect)", hr);
+    return hr;
+  }
+  CLSID clsid{};
+  hr = ReadRootClsid(storage, &clsid);
+  storage->Release();
+  if (SUCCEEDED(hr)) {
+    Log(L"inspect: root CLSID=" + GuidText(clsid) + L" (read-only; no activation)");
+  } else {
+    LogHr(L"IStorage::Stat", hr);
+  }
+  return hr;
+}
+
+HRESULT RunEdit(const std::wstring& input, const std::wstring& output,
+                REFCLSID requested) {
+  if (!CopyFileW(input.c_str(), output.c_str(), TRUE)) {
+    HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
+    LogHr(L"CopyFileW (output must not already exist)", hr);
+    return hr;
+  }
+  IStorage* storage = nullptr;
+  HRESULT hr = OpenStorage(output, STGM_READWRITE | STGM_SHARE_EXCLUSIVE, &storage);
+  if (FAILED(hr)) {
+    LogHr(L"StgOpenStorage(output)", hr);
+    return hr;
+  }
+  hr = CheckOriginClass(storage, requested, nullptr);
+  if (FAILED(hr)) {
+    storage->Release();
+    return hr;
+  }
+  Log(L"edit: class gate passed; opening native Origin host window");
+  EditApp app(output, storage);
+  storage->Release();
+  return app.CreateAndShow();
+}
+
+void PrintUsage() {
+  Log(L"Usage:");
+  Log(L"  origin-bridge.exe inspect INPUT.bin");
+  Log(L"  origin-bridge.exe edit INPUT.bin OUTPUT.bin --clsid {GUID}");
+  Log(L"  origin-bridge.exe --probe INPUT.bin OUTPUT.bin --clsid {GUID}");
+}
+
+}  // namespace
+
+int wmain(int argc, wchar_t** argv) {
+  if (argc < 2) {
+    PrintUsage();
+    return 2;
+  }
+  HRESULT hr = OleInitialize(nullptr);
+  if (FAILED(hr)) {
+    LogHr(L"OleInitialize", hr);
+    return 1;
+  }
+
+  std::wstring command = argv[1];
+  if (command == L"inspect" && argc == 3) {
+    hr = RunInspect(argv[2]);
+  } else if ((command == L"edit" || command == L"--probe") && argc == 6 &&
+             std::wstring(argv[4]) == L"--clsid") {
+    CLSID requested{};
+    hr = ParseClsid(argv[5], &requested);
+    if (SUCCEEDED(hr)) {
+      if (command == L"edit") {
+        hr = RunEdit(argv[2], argv[3], requested);
+      } else {
+        hr = RunProbe(argv[2], argv[3], requested);
+      }
+    } else {
+      LogHr(L"CLSIDFromString", hr);
+    }
+  } else {
+    PrintUsage();
+    hr = E_INVALIDARG;
+  }
+
+  OleUninitialize();
+  return SUCCEEDED(hr) ? 0 : 1;
+}
