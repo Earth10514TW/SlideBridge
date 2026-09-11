@@ -281,10 +281,12 @@ def _reject_unchanged_ole(
         raise SlideBridgeError(
             f"the edited OLE differs from the current one in only {differing} of "
             f"{len(new_bytes)} bytes ({ratio:.4%}): {path}\n"
-            "That looks like re-serialised metadata rather than a chart edit, so writing it "
-            "back would have no visible effect.\n"
-            "In Origin, edit the chart and press Save before closing the helper. "
-            "Pass --allow-unchanged to write it back anyway."
+            "That looks like re-serialised metadata rather than a chart edit. "
+            "This usually means the chart was not saved inside Origin before closing the helper "
+            "(or the edit produced no data/graph change).\n"
+            "Tip: In Origin, press Ctrl+S (or File -> Save) to commit your chart changes before "
+            "clicking 'Save and Close' in the helper window.\n"
+            "To force writing back this session anyway, pass --allow-unchanged."
         )
 
 

@@ -14,8 +14,10 @@ from slidebridge.core import SlideBridgeError
 from slidebridge.powerpoint import (
     _get_ordered_slide_parts,
     default_session_parent,
+    edit_active_presentation,
     resolve_ole_from_selection,
 )
+from slidebridge.vm import Guest
 
 
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -235,6 +237,37 @@ class PowerPointIntegrationTests(unittest.TestCase):
         self.assertEqual(Path(rep["output"]).resolve(), self.pptx.resolve())
         with zipfile.ZipFile(self.pptx) as z:
             self.assertEqual(z.read("ppt/embeddings/oleObject1.bin"), new_cfb)
+
+    def test_edit_active_presentation_allow_unchanged(self):
+        state = {
+            "presentation_path": str(self.pptx),
+            "slide_index": 1,
+            "shape_bounds": (50.0, 50.0, 200.0, 100.0),
+            "shape_name": "Shape A",
+        }
+        session1 = self.tmp_path / "custom_sess1"
+        session2 = self.tmp_path / "custom_sess2"
+
+        def mock_launch(guest, session_dir, **kwargs):
+            # Write identical OLE back (simulate no edits)
+            (session_dir / "edited.bin").write_bytes(_cfb_payload(variant=0))
+            (session_dir / "preview.png").write_bytes(_minimal_png() + b"extra")
+            return 0
+
+        with patch("slidebridge.powerpoint.get_active_powerpoint_state", return_value=state), \
+             patch("slidebridge.powerpoint.save_active_presentation"), \
+             patch("slidebridge.powerpoint.reload_presentation"), \
+             patch("slidebridge.powerpoint.detect_guest", return_value=Guest("parallels", "Win11")), \
+             patch("slidebridge.powerpoint.launch_vm_helper", side_effect=mock_launch):
+
+            # Without allow_unchanged, raises SlideBridgeError
+            with self.assertRaises(SlideBridgeError):
+                edit_active_presentation(session_dir=session1, reload_after=False, allow_unchanged=False)
+
+            # With allow_unchanged=True, succeeds
+            rep = edit_active_presentation(session_dir=session2, reload_after=False, allow_unchanged=True)
+            self.assertEqual(rep["status"], "success")
+            self.assertEqual(rep["member"], "ppt/embeddings/oleObject1.bin")
 
 
 class DefaultSessionParentTests(unittest.TestCase):

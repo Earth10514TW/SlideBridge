@@ -320,6 +320,7 @@ def edit_active_presentation(
     reload_after: bool = True,
     session_dir: os.PathLike[str] | str | None = None,
     vm_backend: str | None = None,
+    allow_unchanged: bool = False,
 ) -> dict:
     """Full end-to-end workflow: detect selection, save, edit in VM, writeback, and reload."""
     # 1. Query PowerPoint
@@ -369,6 +370,7 @@ def edit_active_presentation(
         session_dir=chosen_session,
         force=True,  # Bypass SHA256 check because PowerPoint just saved it
         in_place=in_place,
+        allow_unchanged=allow_unchanged,
     )
 
     # 7. Hot-reload in PowerPoint

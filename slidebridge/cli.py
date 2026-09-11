@@ -79,6 +79,11 @@ def main(argv=None):
     )
     edit.add_argument("--session", type=Path, default=None, help="Custom session directory")
     edit.add_argument("--force", action="store_true", help="Bypass source presentation SHA-256 conflict check")
+    edit.add_argument(
+        "--allow-unchanged",
+        action="store_true",
+        help="Write back even if OLE or preview appears unchanged",
+    )
     edit.add_argument("--json", action="store_true")
     edit_active = commands.add_parser(
         "edit-active",
@@ -93,6 +98,7 @@ def main(argv=None):
     )
     edit_active.add_argument("--no-in-place", action="store_true", help="Do not overwrite in-place; write to <name>_updated.pptx")
     edit_active.add_argument("--no-reload", action="store_true", help="Do not reload PowerPoint after writeback")
+    edit_active.add_argument("--allow-unchanged", action="store_true", help="Write back even if OLE or preview appears unchanged")
     edit_active.add_argument("--session", type=Path, default=None, help="Custom session directory")
     edit_active.add_argument("--json", action="store_true")
     fix = commands.add_parser("fix", help="Write a repaired copy with PNG previews")
@@ -131,6 +137,7 @@ def main(argv=None):
                 reload_after=not args.no_reload,
                 session_dir=args.session,
                 vm_backend=args.vm_backend,
+                allow_unchanged=args.allow_unchanged,
             )
         elif args.command == "edit":
             report = edit_presentation(
@@ -142,7 +149,7 @@ def main(argv=None):
                 vm_backend=args.vm_backend,
                 session_dir=args.session,
                 force=args.force,
-                allow_unchanged=False,
+                allow_unchanged=args.allow_unchanged,
                 interactive=not args.json,
                 on_status=None if args.json else print,
             )
