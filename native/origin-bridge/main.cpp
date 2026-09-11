@@ -334,48 +334,39 @@ class OriginHost final : public IOleClientSite,
       return false;
     }
 
-    // 1. Tell Origin to commit its active document so IPersistStorage gets the user's latest edits.
-    // 2. Export PNG with transparent background:
-    //    expG2img has tb:=1 (transparent background) and type:=0 (PNG).
-    //    Also call expGraph with tr.Export.Image.Transparent:=1 and export SVG.
-    std::wstring labTalkCmd =
-        L"doc -s; "
-        L"expG2img type:=0 name:=\"preview\" path:=\"" + sessionDir + L"\" tb:=1; "
-        L"expGraph type:=png filename:=\"preview\" path:=\"" + sessionDir + L"\" overwrite:=replace tr.Export.Image.Transparent:=1; "
-        L"expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDir + L"\" overwrite:=replace;";
+    auto runCmd = [&](const std::wstring& cmd) {
+      BSTR bstr = SysAllocString(cmd.c_str());
+      if (!bstr) return;
+      VARIANT arg;
+      VariantInit(&arg);
+      arg.vt = VT_BSTR;
+      arg.bstrVal = bstr;
 
-    BSTR bstrCmd = SysAllocString(labTalkCmd.c_str());
-    if (!bstrCmd) {
-      pApp->Release();
-      return false;
-    }
+      DISPPARAMS params{};
+      params.rgvarg = &arg;
+      params.cArgs = 1;
+      params.cNamedArgs = 0;
 
-    VARIANT arg;
-    VariantInit(&arg);
-    arg.vt = VT_BSTR;
-    arg.bstrVal = bstrCmd;
+      VARIANT varResult;
+      VariantInit(&varResult);
+      EXCEPINFO excepInfo{};
+      UINT argErr = 0;
 
-    DISPPARAMS params{};
-    params.rgvarg = &arg;
-    params.cArgs = 1;
-    params.cNamedArgs = 0;
+      pApp->Invoke(dispidExecute, IID_NULL, LOCALE_USER_DEFAULT,
+                   DISPATCH_METHOD, &params, &varResult, &excepInfo, &argErr);
 
-    VARIANT varResult;
-    VariantInit(&varResult);
-    EXCEPINFO excepInfo{};
-    UINT argErr = 0;
+      VariantClear(&arg);
+      VariantClear(&varResult);
+      SysFreeString(bstr);
+    };
 
-    hr = pApp->Invoke(dispidExecute, IID_NULL, LOCALE_USER_DEFAULT,
-                      DISPATCH_METHOD, &params, &varResult, &excepInfo, &argErr);
+    // 1. Primary command: expGraph type:=png (proven to work reliably in Origin OLE)
+    runCmd(L"expGraph type:=png filename:=\"preview\" path:=\"" + sessionDir + L"\" overwrite:=replace;");
 
-    VariantClear(&arg);
-    VariantClear(&varResult);
+    // 2. Secondary command: expGraph type:=svg (vector preview if supported)
+    runCmd(L"expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDir + L"\" overwrite:=replace;");
+
     pApp->Release();
-
-    if (FAILED(hr)) {
-      LogHr(L"Origin COM Execute(expGraph)", hr);
-      return false;
-    }
 
     std::wstring previewPng = sessionDir + L"\\preview.png";
     if (FileExists(previewPng)) {
@@ -1017,6 +1008,11 @@ class EditApp final {
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+      if (message.message == WM_KEYDOWN && (message.wParam == 'S' || message.wParam == 's') &&
+          (GetKeyState(VK_CONTROL) & 0x8000)) {
+        PostMessageW(window_, WM_APP + 1, MAKEWPARAM(kSaveButton, BN_CLICKED), 0);
+        continue;
+      }
       TranslateMessage(&message);
       DispatchMessageW(&message);
     }
@@ -1159,17 +1155,17 @@ class EditApp final {
                   16, 16, 140, 32, window_,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOpenButton)),
                   GetModuleHandleW(nullptr), nullptr);
-    CreateWindowW(L"BUTTON", L"Save & Refresh", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                  166, 16, 140, 32, window_,
+    CreateWindowW(L"BUTTON", L"Save & Refresh (Ctrl+S)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                  166, 16, 180, 32, window_,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveButton)),
                   GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", L"Save and Close", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                  316, 16, 140, 32, window_,
+                  356, 16, 140, 32, window_,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveCloseButton)),
                   GetModuleHandleW(nullptr), nullptr);
     discardButton_ = CreateWindowW(
         L"BUTTON", L"Discard and Close", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        466, 16, 150, 32, window_,
+        506, 16, 150, 32, window_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDiscardCloseButton)),
         GetModuleHandleW(nullptr), nullptr);
     EnableWindow(discardButton_, FALSE);

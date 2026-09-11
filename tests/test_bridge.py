@@ -5,9 +5,15 @@ import tempfile
 import unittest
 import zipfile
 
-from unittest.mock import patch
-from slidebridge.bridge import _find_preview_members, prepare_ole, writeback_ole, edit_presentation
+from slidebridge.bridge import (
+    _find_preview_members,
+    prepare_ole,
+    writeback_ole,
+    edit_presentation,
+    png_white_to_transparent,
+)
 from slidebridge.core import SlideBridgeError
+from unittest.mock import patch
 from slidebridge.vm import Guest
 
 
@@ -763,6 +769,67 @@ class EditPresentationTests(unittest.TestCase):
             with self.assertRaises(SlideBridgeError) as ctx:
                 edit_presentation(self.source, output_path=self.output)
             self.assertIn("No edited.bin found in session", str(ctx.exception))
+
+
+class PngTransparencyTests(unittest.TestCase):
+    def test_non_png_returned_unchanged(self):
+        self.assertEqual(png_white_to_transparent(b"not a png"), b"not a png")
+
+    def test_rgb_white_border_made_transparent(self):
+        import struct, zlib
+        scanlines = b"\x00\xff\xff\xff\xff\x00\x00" + b"\x00\xff\xff\xff\x00\x00\x00"
+        compressed = zlib.compress(scanlines)
+        png_parts = [b"\x89PNG\r\n\x1a\n"]
+        ihdr = struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0)
+        png_parts.append(struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr)))
+        png_parts.append(struct.pack(">I", len(compressed)) + b"IDAT" + compressed + struct.pack(">I", zlib.crc32(b"IDAT" + compressed)))
+        png_parts.append(struct.pack(">I", 0) + b"IEND" + struct.pack(">I", zlib.crc32(b"IEND")))
+        test_png = b"".join(png_parts)
+
+        result = png_white_to_transparent(test_png)
+        self.assertTrue(result.startswith(b"\x89PNG\r\n\x1a\n"))
+
+        res_idat = bytearray()
+        p = 8
+        while p < len(result):
+            l = struct.unpack(">I", result[p:p+4])[0]
+            ct = result[p+4:p+8]
+            if ct == b"IDAT":
+                res_idat.extend(result[p+8:p+8+l])
+            p += 12 + l
+        raw_res = zlib.decompress(bytes(res_idat))
+        self.assertEqual(tuple(raw_res[1:5]), (255, 255, 255, 0))
+        self.assertEqual(tuple(raw_res[5:9]), (255, 0, 0, 255))
+        self.assertEqual(tuple(raw_res[10:14]), (255, 255, 255, 0))
+        self.assertEqual(tuple(raw_res[14:18]), (0, 0, 0, 255))
+
+    def test_enclosed_white_preserved_opaque(self):
+        import struct, zlib
+        scanlines = (
+            b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+            b"\x00\x00\x00\x00\xff\xff\xff\x00\x00\x00"
+            b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+        )
+        compressed = zlib.compress(scanlines)
+        png_parts = [b"\x89PNG\r\n\x1a\n"]
+        ihdr = struct.pack(">IIBBBBB", 3, 3, 8, 2, 0, 0, 0)
+        png_parts.append(struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr)))
+        png_parts.append(struct.pack(">I", len(compressed)) + b"IDAT" + compressed + struct.pack(">I", zlib.crc32(b"IDAT" + compressed)))
+        png_parts.append(struct.pack(">I", 0) + b"IEND" + struct.pack(">I", zlib.crc32(b"IEND")))
+        test_png = b"".join(png_parts)
+
+        result = png_white_to_transparent(test_png)
+        res_idat = bytearray()
+        p = 8
+        while p < len(result):
+            l = struct.unpack(">I", result[p:p+4])[0]
+            ct = result[p+4:p+8]
+            if ct == b"IDAT":
+                res_idat.extend(result[p+8:p+8+l])
+            p += 12 + l
+        raw_res = zlib.decompress(bytes(res_idat))
+        center_pixel = tuple(raw_res[18:22])
+        self.assertEqual(center_pixel, (255, 255, 255, 255))
 
 
 if __name__ == "__main__":
