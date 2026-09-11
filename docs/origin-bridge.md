@@ -1,6 +1,6 @@
 # Origin 編輯橋接原型
 
-目標是讓 Windows 只安裝 Origin 與本專案 helper，就能編輯由 PPTX 抽出的嵌入 OLE。此階段不修改 PPTX，也尚未產生更新後的預覽圖。Word、Mac PowerPoint 雙擊攔截與 Add-in 均未實作。
+目標是讓 Windows 只安裝 Origin 與本專案 helper，就能編輯由 PPTX 抽出的嵌入 OLE。Windows Helper 內建即時圖表預覽畫布（所見即所得），並於儲存時自動匯出成對的向量 EMF 與 300 DPI 高保真 PNG 預覽圖。Word、Mac PowerPoint 雙擊攔截與 Add-in 均未實作。
 
 ## 建立測試副本
 
@@ -38,17 +38,42 @@ cmake --build artifacts/origin-bridge-build --config Release
 
 指定的 CLSID 必須同時符合檔案與 Windows 上 `Origin95.Graph` 的註冊值；上述值來自本機測試樣本，其他類別不在此原型支援範圍。既有 output 不會覆寫。所有儲存都發生在 output 副本。
 
-先改一個可辨識的項目（例如標題），依 Origin 的嵌入物件更新操作提交，再按 helper 的 Save／Save and Close。之後使用 `edited.bin` 作為下一次 edit 的 input，指定另一個新的 output，確認改動確實保存。只有這個實際編輯再開啟的結果，才能證明編輯往返成立。
+- **即時視覺預覽（所見即所得）**：Helper 視窗下方設有圖表預覽畫布，透過 `IAdviseSink` 監聽 Origin 的更新事件，並以 `OleDraw` 即時將圖表以正確長寬比繪製至視窗中央，修改結果立即可見。
+- **儲存時自動匯出預覽圖**：按下 Save 或 Save and Close 時，Helper 會同時輸出：
+  - `edited.bin`（OLE 二進位儲存檔）
+  - `edited.emf`（原始向量圖，由 `IDataObject` 或 `OleDraw` 產出）
+  - `edited.png`（由 Windows GDI+ 原生渲染的 300 DPI 點陣圖）
+- 只有實際編輯再開啟的結果，才能證明編輯往返成立。儲存後可使用 `edited.bin` 作為下一次 edit 的 input，指定另一個新的 output 進行二次驗證。
 
-## 雙向回寫簡報（writeback-ole）
+## Mac 端一鍵式無縫編輯工作流（slidebridge edit）
 
-在完成 OLE 二進位編輯與預覽圖產生後，使用 `writeback-ole` 命令將修改成對寫回簡報：
+若本機安裝有 Parallels Desktop 且虛擬機運行中，可直接在 Mac 端透過 `edit` 子命令達成全自動化跨 VM 編輯與回寫：
 
 ```sh
+python3 -m slidebridge edit presentation.pptx
+# 或使用包裝腳本：
+./scripts/edit_presentation.sh presentation.pptx
+```
+
+**自動執行流程：**
+1. **自動探測**：自動掃描簡報中的所有 Origin OLE 物件；若有多個圖表會以終端機清單提示選擇編號。
+2. **自動抽出**：在背景建立 session 安全副本。
+3. **自動喚醒與置頂**：自動透過 Parallels CLI（`prlctl`）喚起運行中的 Windows VM（如 `Windows 11 Lite`），並將 Windows Helper 與 Origin 視窗拉至最前景。
+4. **即時編輯與預覽**：在 Origin 編輯圖表並存檔，Helper 畫面即時連動並自動生成 `edited.emf` 與 300 DPI `edited.png`。
+5. **自動成對回寫**：使用者點擊 Helper 的 Save and Close 後，Mac 端自動偵測存檔完成，立即成對寫回簡報，產出 `presentation_updated.pptx`，全程不需手動指定任何路徑。
+
+## 獨立步驟：手動分步操作與雙向回寫
+
+若偏好手動管理 session 或進行細部除錯，亦可透過分步命令：
+
+```sh
+# 1. 抽出 session
+python3 -m slidebridge prepare-ole input.pptx \
+  --member ppt/embeddings/oleObject1.bin -o artifacts/ole-session --json
+
+# 2. 在 Windows 編輯後，手動回寫
 python3 -m slidebridge writeback-ole input.pptx \
   --session artifacts/ole-session \
-  --ole artifacts/ole-session/reopen-verify.bin \
-  --preview artifacts/ole-session/reopen-verify.png \
   -o artifacts/presentation_writeback.pptx --json
 ```
 

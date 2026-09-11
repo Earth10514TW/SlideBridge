@@ -13,6 +13,20 @@ $outputFile = Join-Path $OutputDirectory 'roundtrip.bin'
 if ($LASTEXITCODE -ne 0) { throw 'Storage inspection failed.' }
 & $Executable --probe $InputFile $outputFile --clsid $Clsid
 if ($LASTEXITCODE -ne 0) { throw 'Origin storage roundtrip failed.' }
+$outputEmf = Join-Path $OutputDirectory 'roundtrip.emf'
+$outputPng = Join-Path $OutputDirectory 'roundtrip.png'
+if (-not (Test-Path -LiteralPath $outputEmf)) { throw 'Expected roundtrip.emf preview was not generated.' }
+if ((Get-Item -LiteralPath $outputEmf).Length -eq 0) { throw 'Generated roundtrip.emf is empty.' }
+$emfBytes = [System.IO.File]::ReadAllBytes($outputEmf)
+if ($emfBytes.Length -lt 88 -or [System.BitConverter]::ToUInt32($emfBytes, 0) -ne 1) {
+    throw 'Generated roundtrip.emf does not have valid EMF record header.'
+}
+if (-not (Test-Path -LiteralPath $outputPng)) { throw 'Expected roundtrip.png preview was not generated.' }
+if ((Get-Item -LiteralPath $outputPng).Length -eq 0) { throw 'Generated roundtrip.png is empty.' }
+$pngBytes = [System.IO.File]::ReadAllBytes($outputPng)
+if ($pngBytes.Length -lt 8 -or $pngBytes[0] -ne 0x89 -or $pngBytes[1] -ne 0x50 -or $pngBytes[2] -ne 0x4E -or $pngBytes[3] -ne 0x47) {
+    throw 'Generated roundtrip.png does not have valid PNG signature.'
+}
 $savedHash = (Get-FileHash -LiteralPath $outputFile -Algorithm SHA256).Hash
 & $Executable --probe $InputFile $outputFile --clsid $Clsid
 if ($LASTEXITCODE -eq 0) { throw 'Existing output was accepted.' }
@@ -24,4 +38,4 @@ if ($LASTEXITCODE -eq 0) { throw 'Incorrect CLSID was accepted.' }
 if ((Get-FileHash -LiteralPath $InputFile -Algorithm SHA256).Hash -ne $before) {
     throw 'Input was modified.'
 }
-Write-Output 'PASS: storage roundtrip, class gate, no overwrite, input unchanged. Interactive editing remains unverified.'
+Write-Output 'PASS: storage roundtrip, preview export (EMF+PNG), class gate, no overwrite, input unchanged. Interactive editing remains unverified.'

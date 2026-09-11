@@ -311,6 +311,7 @@ def writeback_ole(
     ole_path: os.PathLike[str] | str | None = None,
     preview_path: os.PathLike[str] | str | None = None,
     force: bool = False,
+    in_place: bool = False,
 ) -> dict:
     """Pair-write an edited OLE binary and its updated preview back into a presentation.
 
@@ -319,7 +320,7 @@ def writeback_ole(
     2. Embedded OLE member SHA-256 integrity check.
     3. Valid CFB header for the new OLE binary.
     4. Strict paired writeback: a valid PNG or EMF preview image must be provided.
-    5. Atomic publication: writes to a temporary file in the destination folder, never overwriting existing files.
+    5. Atomic publication: writes to a temporary file in the destination folder, never overwriting existing files (unless in_place=True).
     """
     source_value = _path_string(source_path)
     session_value = _path_string(session_dir)
@@ -343,16 +344,19 @@ def writeback_ole(
         raise SlideBridgeError("manifest.json is missing required schema fields")
 
     # Output path setup
-    if output_path is None:
+    if in_place:
+        output_full = source_full
+    elif output_path is None:
         p = Path(source_full)
         output_full = str(p.with_name(f"{p.stem}_writeback{p.suffix}"))
     else:
         output_full = os.path.abspath(_path_string(output_path))
 
-    if os.path.realpath(source_full) == os.path.realpath(output_full):
-        raise SlideBridgeError("source and output must be different paths")
-    if os.path.exists(output_full):
-        raise SlideBridgeError(f"output already exists: {output_full}")
+    if not in_place:
+        if os.path.realpath(source_full) == os.path.realpath(output_full):
+            raise SlideBridgeError("source and output must be different paths")
+        if os.path.exists(output_full):
+            raise SlideBridgeError(f"output already exists: {output_full}")
 
     parent_dir = os.path.dirname(output_full) or os.curdir
     if not os.path.isdir(parent_dir):
@@ -505,19 +509,28 @@ def writeback_ole(
         archive.close()
         archive = None
 
-        try:
-            os.link(temporary_output, output_full)
-        except FileExistsError as exc:
-            raise SlideBridgeError(f"output already exists: {output_full}") from exc
+        backup_path: str | None = None
+        if in_place:
+            p_src = Path(source_full)
+            backup_p = p_src.with_name(f"{p_src.stem}.sb_backup{p_src.suffix}")
+            shutil.copy2(source_full, backup_p)
+            backup_path = str(backup_p)
+            os.replace(temporary_output, output_full)
+            temporary_output = None
+        else:
+            try:
+                os.link(temporary_output, output_full)
+            except FileExistsError as exc:
+                raise SlideBridgeError(f"output already exists: {output_full}") from exc
 
-        published_temp = temporary_output
-        temporary_output = None
-        try:
-            os.unlink(published_temp)
-        except OSError:
-            pass
+            published_temp = temporary_output
+            temporary_output = None
+            try:
+                os.unlink(published_temp)
+            except OSError:
+                pass
 
-        return {
+        report = {
             "source": source_full,
             "output": output_full,
             "member": member,
@@ -531,6 +544,10 @@ def writeback_ole(
             "updated_relationships": changed_relationships,
             "status": "success",
         }
+        if in_place:
+            report["in_place"] = True
+            report["backup"] = backup_path
+        return report
     except SlideBridgeError:
         raise
     except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
@@ -545,4 +562,37 @@ def writeback_ole(
                 pass
 
 
-__all__ = ["prepare_ole", "writeback_ole"]
+def list_ole_objects(input_path: os.PathLike[str] | str) -> list[dict]:
+    """Scan a presentation and return a list of all embedded OLE objects with slide & preview metadata."""
+    source_value = _path_string(input_path)
+    archive = _check_archive(source_value)
+    try:
+        names = {info.filename for info in archive.infolist() if not info.is_dir()}
+        ole_members = sorted([
+            name for name in names
+            if name.startswith(_EMBEDDINGS_PREFIX) and name != _EMBEDDINGS_PREFIX
+        ])
+        results: list[dict] = []
+        for member in ole_members:
+            try:
+                data = archive.read(member)
+                if not data.startswith(_CFB_SIGNATURE):
+                    continue
+                references = _find_references(archive, member)
+                previews = _find_preview_members(archive, references)
+                slides = sorted({ref["slide"] for ref in references})
+                results.append({
+                    "member": member,
+                    "slides": slides,
+                    "previews": previews,
+                    "references": references,
+                    "bytes": len(data),
+                })
+            except SlideBridgeError:
+                continue
+        return results
+    finally:
+        archive.close()
+
+
+__all__ = ["prepare_ole", "writeback_ole", "list_ole_objects"]

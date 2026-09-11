@@ -14,6 +14,12 @@
 #include <objbase.h>
 
 #include <algorithm>
+namespace Gdiplus {
+  using std::min;
+  using std::max;
+}
+#include <gdiplus.h>
+
 #include <cwchar>
 #include <iostream>
 #include <iterator>
@@ -32,6 +38,26 @@ constexpr int kSaveButton = 1002;
 constexpr int kSaveCloseButton = 1003;
 constexpr int kStatusControl = 1004;
 constexpr int kDiscardCloseButton = 1005;
+
+constexpr CLSID kPngEncoderClsid = {
+    0x557cf406, 0x1a04, 0x11d3, {0x9a, 0x73, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e}};
+
+std::wstring GetBasePathWithoutExt(const std::wstring& path) {
+  size_t lastDot = path.find_last_of(L'.');
+  size_t lastSlash = path.find_last_of(L"/\\");
+  if (lastDot != std::wstring::npos && (lastSlash == std::wstring::npos || lastDot > lastSlash)) {
+    return path.substr(0, lastDot);
+  }
+  return path;
+}
+
+std::wstring GetFilename(const std::wstring& path) {
+  size_t lastSlash = path.find_last_of(L"/\\");
+  if (lastSlash != std::wstring::npos) {
+    return path.substr(lastSlash + 1);
+  }
+  return path;
+}
 
 void Log(const std::wstring& message) {
   std::wcout << message << std::endl;
@@ -111,10 +137,12 @@ HRESULT CheckOriginClass(IStorage* storage, REFCLSID requested, CLSID* rootOut) 
 
 class OriginHost final : public IOleClientSite,
                          public IOleInPlaceSite,
-                         public IOleInPlaceFrame {
+                         public IOleInPlaceFrame,
+                         public IAdviseSink {
  public:
-  OriginHost(HWND owner, HWND status, IStorage* storage)
-      : refCount_(1), owner_(owner), status_(status), storage_(storage) {
+  OriginHost(HWND owner, HWND status, IStorage* storage, std::wstring outputBasePath = L"")
+      : refCount_(1), owner_(owner), status_(status), storage_(storage),
+        outputBasePath_(std::move(outputBasePath)) {
     if (storage_) {
       storage_->AddRef();
     }
@@ -163,6 +191,11 @@ class OriginHost final : public IOleClientSite,
       LogHr(L"OleSetContainedObject", hr);
       ReleaseObject();
       return hr;
+    }
+    IViewObject* view = nullptr;
+    if (SUCCEEDED(object_->QueryInterface(IID_IViewObject, reinterpret_cast<void**>(&view)))) {
+      view->SetAdvise(DVASPECT_CONTENT, 0, this);
+      view->Release();
     }
     return S_OK;
   }
@@ -242,7 +275,26 @@ class OriginHost final : public IOleClientSite,
     saving_ = false;
     if (SUCCEEDED(hr)) {
       explicitlySaved_ = true;
-      SetStatus(L"Saved to the output storage.");
+      std::wstring statusMsg = L"Saved to the output storage.";
+      if (!outputBasePath_.empty()) {
+        std::wstring emfPath, pngPath;
+        HRESULT exportHr = ExportPreview(outputBasePath_, &emfPath, &pngPath);
+        if (SUCCEEDED(exportHr)) {
+          std::wstring details;
+          if (!emfPath.empty()) details += GetFilename(emfPath);
+          if (!pngPath.empty()) {
+            if (!details.empty()) details += L", ";
+            details += GetFilename(pngPath);
+          }
+          statusMsg += L" Exported previews: " + details;
+        } else {
+          statusMsg += L" (Warning: preview export failed)";
+        }
+      }
+      SetStatus(statusMsg);
+      if (owner_) {
+        InvalidateRect(owner_, nullptr, TRUE);
+      }
     } else {
       LogHr(L"Save", hr);
       if (persistencePoisoned_) {
@@ -250,6 +302,184 @@ class OriginHost final : public IOleClientSite,
       }
     }
     return hr;
+  }
+
+  void DrawPreview(HDC hdc, const RECT& targetRect) {
+    if (!object_) {
+      return;
+    }
+    SIZEL sizel{};
+    HRESULT hr = object_->GetExtent(DVASPECT_CONTENT, &sizel);
+    RECT drawRect = targetRect;
+    if (SUCCEEDED(hr) && sizel.cx > 0 && sizel.cy > 0) {
+      int availW = targetRect.right - targetRect.left;
+      int availH = targetRect.bottom - targetRect.top;
+      if (availW > 0 && availH > 0) {
+        double extentAspect = static_cast<double>(sizel.cx) / static_cast<double>(sizel.cy);
+        double targetAspect = static_cast<double>(availW) / static_cast<double>(availH);
+        int drawW = availW;
+        int drawH = availH;
+        if (extentAspect > targetAspect) {
+          drawH = static_cast<int>(availW / extentAspect);
+        } else {
+          drawW = static_cast<int>(availH * extentAspect);
+        }
+        drawRect.left = targetRect.left + (availW - drawW) / 2;
+        drawRect.top = targetRect.top + (availH - drawH) / 2;
+        drawRect.right = drawRect.left + drawW;
+        drawRect.bottom = drawRect.top + drawH;
+      }
+    }
+
+    HBRUSH whiteBrush = static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH));
+    FillRect(hdc, &drawRect, whiteBrush);
+
+    OleDraw(object_, DVASPECT_CONTENT, hdc, &drawRect);
+
+    HBRUSH frameBrush = CreateSolidBrush(RGB(180, 180, 180));
+    FrameRect(hdc, &drawRect, frameBrush);
+    DeleteObject(frameBrush);
+  }
+
+  HRESULT ExportPreview(const std::wstring& baseOutputPath,
+                        std::wstring* emfOut = nullptr,
+                        std::wstring* pngOut = nullptr) {
+    if (!object_) {
+      return E_UNEXPECTED;
+    }
+    std::wstring tempEmfPath = baseOutputPath + L".tmp.emf";
+    std::wstring targetEmfPath = baseOutputPath + L".emf";
+    std::wstring tempPngPath = baseOutputPath + L".tmp.png";
+    std::wstring targetPngPath = baseOutputPath + L".png";
+
+    bool emfSuccess = false;
+
+    // 1. Try IDataObject(CF_ENHMETAFILE)
+    IDataObject* dataObj = nullptr;
+    if (SUCCEEDED(object_->QueryInterface(IID_IDataObject, reinterpret_cast<void**>(&dataObj)))) {
+      FORMATETC fetc = { CF_ENHMETAFILE, nullptr, DVASPECT_CONTENT, -1, TYMED_ENHMF };
+      STGMEDIUM medium = {};
+      if (SUCCEEDED(dataObj->GetData(&fetc, &medium))) {
+        if (medium.tymed == TYMED_ENHMF && medium.hEnhMetaFile) {
+          HENHMETAFILE hCopy = CopyEnhMetaFileW(medium.hEnhMetaFile, tempEmfPath.c_str());
+          if (hCopy) {
+            DeleteEnhMetaFile(hCopy);
+            emfSuccess = true;
+          }
+        }
+        ReleaseStgMedium(&medium);
+      }
+      dataObj->Release();
+    }
+
+    SIZEL sizel{ 10000, 7500 };
+    object_->GetExtent(DVASPECT_CONTENT, &sizel);
+    if (sizel.cx <= 0) sizel.cx = 10000;
+    if (sizel.cy <= 0) sizel.cy = 7500;
+
+    // 2. Fallback to OleDraw into CreateEnhMetaFileW if IDataObject failed
+    if (!emfSuccess) {
+      RECT rcHimetric = { 0, 0, sizel.cx, sizel.cy };
+      HDC hdcMeta = CreateEnhMetaFileW(nullptr, tempEmfPath.c_str(), &rcHimetric, L"SlideBridge\0Origin Graph\0\0");
+      if (hdcMeta) {
+        HDC screenDc = GetDC(nullptr);
+        int dpiX = screenDc ? GetDeviceCaps(screenDc, LOGPIXELSX) : 96;
+        int dpiY = screenDc ? GetDeviceCaps(screenDc, LOGPIXELSY) : 96;
+        if (screenDc) ReleaseDC(nullptr, screenDc);
+        int px = MulDiv(sizel.cx, dpiX, 2540);
+        int py = MulDiv(sizel.cy, dpiY, 2540);
+        RECT rcPixels = { 0, 0, px, py };
+        HRESULT drawHr = OleDraw(object_, DVASPECT_CONTENT, hdcMeta, &rcPixels);
+        HENHMETAFILE hemf = CloseEnhMetaFile(hdcMeta);
+        if (hemf) {
+          if (SUCCEEDED(drawHr)) {
+            emfSuccess = true;
+          }
+          DeleteEnhMetaFile(hemf);
+        }
+      }
+    }
+
+    if (emfSuccess) {
+      MoveFileExW(tempEmfPath.c_str(), targetEmfPath.c_str(),
+                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED);
+      if (emfOut) *emfOut = targetEmfPath;
+      Log(L"Exported EMF preview: " + targetEmfPath);
+    } else {
+      Log(L"Warning: Failed to export EMF preview.");
+    }
+
+    // 3. Export PNG via GDI+ at 300 DPI
+    bool pngSuccess = false;
+    int targetDpi = 300;
+    int pngW = MulDiv(sizel.cx, targetDpi, 2540);
+    int pngH = MulDiv(sizel.cy, targetDpi, 2540);
+    if (pngW < 200) pngW = 200;
+    if (pngH < 200) pngH = 200;
+    if (pngW > 4096) {
+      pngH = MulDiv(pngH, 4096, pngW);
+      pngW = 4096;
+    }
+    if (pngH > 4096) {
+      pngW = MulDiv(pngW, 4096, pngH);
+      pngH = 4096;
+    }
+
+    if (emfSuccess) {
+      Gdiplus::Metafile metafile(targetEmfPath.c_str());
+      if (metafile.GetLastStatus() == Gdiplus::Ok) {
+        Gdiplus::Bitmap bitmap(pngW, pngH, PixelFormat32bppARGB);
+        Gdiplus::Graphics g(&bitmap);
+        g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+        g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+        g.Clear(Gdiplus::Color(255, 255, 255, 255));
+        g.DrawImage(&metafile, 0, 0, pngW, pngH);
+        if (bitmap.Save(tempPngPath.c_str(), &kPngEncoderClsid, nullptr) == Gdiplus::Ok) {
+          pngSuccess = true;
+        }
+      }
+    }
+
+    if (!pngSuccess) {
+      BITMAPINFO bmi{};
+      bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+      bmi.bmiHeader.biWidth = pngW;
+      bmi.bmiHeader.biHeight = -pngH;
+      bmi.bmiHeader.biPlanes = 1;
+      bmi.bmiHeader.biBitCount = 32;
+      bmi.bmiHeader.biCompression = BI_RGB;
+      void* bits = nullptr;
+      HDC screenDc = GetDC(nullptr);
+      HDC memDc = CreateCompatibleDC(screenDc);
+      HBITMAP hBmp = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+      if (screenDc) ReleaseDC(nullptr, screenDc);
+      if (memDc && hBmp) {
+        HGDIOBJ oldBmp = SelectObject(memDc, hBmp);
+        RECT rc = { 0, 0, pngW, pngH };
+        HBRUSH whiteBrush = static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH));
+        FillRect(memDc, &rc, whiteBrush);
+        OleDraw(object_, DVASPECT_CONTENT, memDc, &rc);
+        SelectObject(memDc, oldBmp);
+
+        Gdiplus::Bitmap bitmap(hBmp, nullptr);
+        if (bitmap.Save(tempPngPath.c_str(), &kPngEncoderClsid, nullptr) == Gdiplus::Ok) {
+          pngSuccess = true;
+        }
+      }
+      if (hBmp) DeleteObject(hBmp);
+      if (memDc) DeleteDC(memDc);
+    }
+
+    if (pngSuccess) {
+      MoveFileExW(tempPngPath.c_str(), targetPngPath.c_str(),
+                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED);
+      if (pngOut) *pngOut = targetPngPath;
+      Log(L"Exported PNG preview: " + targetPngPath);
+    } else {
+      Log(L"Warning: Failed to export PNG preview.");
+    }
+
+    return (emfSuccess || pngSuccess) ? S_OK : S_FALSE;
   }
 
   HRESULT CloseAfterSave() {
@@ -301,6 +531,11 @@ class OriginHost final : public IOleClientSite,
     // explicit successful save through Save().  Detaching the site breaks the
     // object -> client-site reference before releasing our object reference.
     if (siteAttached_) {
+      IViewObject* view = nullptr;
+      if (SUCCEEDED(object_->QueryInterface(IID_IViewObject, reinterpret_cast<void**>(&view)))) {
+        view->SetAdvise(DVASPECT_CONTENT, 0, nullptr);
+        view->Release();
+      }
       object_->SetClientSite(nullptr);
       siteAttached_ = false;
     }
@@ -328,6 +563,8 @@ class OriginHost final : public IOleClientSite,
       *object = static_cast<IOleInPlaceSite*>(this);
     } else if (riid == IID_IOleInPlaceFrame) {
       *object = static_cast<IOleInPlaceFrame*>(this);
+    } else if (riid == IID_IAdviseSink) {
+      *object = static_cast<IAdviseSink*>(this);
     } else {
       return E_NOINTERFACE;
     }
@@ -456,6 +693,21 @@ class OriginHost final : public IOleClientSite,
   HRESULT STDMETHODCALLTYPE EnableModeless(BOOL) override { return S_OK; }
   HRESULT STDMETHODCALLTYPE TranslateAccelerator(LPMSG, WORD) override { return E_NOTIMPL; }
 
+  // IAdviseSink
+  void STDMETHODCALLTYPE OnDataChange(FORMATETC*, STGMEDIUM*) override {}
+  void STDMETHODCALLTYPE OnViewChange(DWORD, LONG) override {
+    if (owner_) {
+      InvalidateRect(owner_, nullptr, FALSE);
+    }
+  }
+  void STDMETHODCALLTYPE OnRename(IMoniker*) override {}
+  void STDMETHODCALLTYPE OnSave() override {
+    if (owner_) {
+      InvalidateRect(owner_, nullptr, FALSE);
+    }
+  }
+  void STDMETHODCALLTYPE OnClose() override {}
+
  private:
   LONG refCount_;
   HWND owner_;
@@ -468,6 +720,7 @@ class OriginHost final : public IOleClientSite,
   bool closed_ = false;
   bool saving_ = false;
   bool persistencePoisoned_ = false;
+  std::wstring outputBasePath_;
 };
 
 class EditApp final {
@@ -503,7 +756,7 @@ class EditApp final {
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     RegisterClassW(&wc);
 
-    RECT desired{0, 0, 960, 720};
+    RECT desired{0, 0, 1024, 768};
     AdjustWindowRect(&desired, WS_OVERLAPPEDWINDOW, FALSE);
     window_ = CreateWindowExW(0, kWindowClass, kWindowTitle,
                               WS_OVERLAPPEDWINDOW | WS_VISIBLE,
@@ -547,7 +800,41 @@ class EditApp final {
     switch (message) {
       case WM_CREATE:
         CreateControls();
-        host_ = new OriginHost(window_, status_, storage_);
+        host_ = new OriginHost(window_, status_, storage_, GetBasePathWithoutExt(output_));
+        return 0;
+
+      case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC hdc = BeginPaint(window_, &ps);
+        RECT client{};
+        GetClientRect(window_, &client);
+        RECT previewBox{ 16, 96, client.right - 16, client.bottom - 16 };
+        if (previewBox.right > previewBox.left && previewBox.bottom > previewBox.top) {
+          HBRUSH bgBrush = CreateSolidBrush(RGB(245, 245, 245));
+          FillRect(hdc, &previewBox, bgBrush);
+          DeleteObject(bgBrush);
+
+          HBRUSH borderBrush = CreateSolidBrush(RGB(200, 200, 200));
+          FrameRect(hdc, &previewBox, borderBrush);
+          DeleteObject(borderBrush);
+
+          if (host_ && host_->HasObject()) {
+            RECT innerBox{ previewBox.left + 8, previewBox.top + 8,
+                           previewBox.right - 8, previewBox.bottom - 8 };
+            host_->DrawPreview(hdc, innerBox);
+          } else {
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, RGB(128, 128, 128));
+            DrawTextW(hdc, L"Origin chart preview will appear here...", -1,
+                      &previewBox, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+          }
+        }
+        EndPaint(window_, &ps);
+        return 0;
+      }
+
+      case WM_SIZE:
+        InvalidateRect(window_, nullptr, TRUE);
         return 0;
 
       case WM_SHOWWINDOW:
@@ -632,7 +919,7 @@ class EditApp final {
         GetModuleHandleW(nullptr), nullptr);
     EnableWindow(discardButton_, FALSE);
     status_ = CreateWindowW(L"STATIC", L"Loading...", WS_CHILD | WS_VISIBLE,
-                            16, 64, 900, 28, window_,
+                            16, 60, 980, 28, window_,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusControl)),
                             GetModuleHandleW(nullptr), nullptr);
   }
@@ -728,7 +1015,7 @@ HRESULT RunProbe(const std::wstring& input, const std::wstring& output,
     return hr;
   }
   Log(L"probe: LOAD");
-  auto* host = new OriginHost(nullptr, nullptr, storage);
+  auto* host = new OriginHost(nullptr, nullptr, storage, GetBasePathWithoutExt(output));
   storage->Release();
   hr = host->LoadObject();
   if (SUCCEEDED(hr)) {
@@ -842,9 +1129,17 @@ int wmain(int argc, wchar_t** argv) {
     PrintUsage();
     return 2;
   }
+
+  Gdiplus::GdiplusStartupInput gdiplusStartupInput;
+  ULONG_PTR gdiplusToken = 0;
+  Gdiplus::Status gdiStatus = Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr);
+
   HRESULT hr = OleInitialize(nullptr);
   if (FAILED(hr)) {
     LogHr(L"OleInitialize", hr);
+    if (gdiStatus == Gdiplus::Ok) {
+      Gdiplus::GdiplusShutdown(gdiplusToken);
+    }
     return 1;
   }
 
@@ -870,5 +1165,8 @@ int wmain(int argc, wchar_t** argv) {
   }
 
   OleUninitialize();
+  if (gdiStatus == Gdiplus::Ok) {
+    Gdiplus::GdiplusShutdown(gdiplusToken);
+  }
   return SUCCEEDED(hr) ? 0 : 1;
 }

@@ -9,5 +9,5 @@ command -v x86_64-w64-mingw32-g++ >/dev/null || {
 }
 x86_64-w64-mingw32-g++ -std=c++17 -Wall -Wextra -municode -static \
   "$task_root/native/origin-bridge/main.cpp" -o "$task_out" \
-  -lole32 -luuid -luser32
+  -lole32 -luuid -luser32 -lgdi32 -lgdiplus
 echo "$task_out"

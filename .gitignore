@@ -8,3 +8,4 @@ dist/
 *.pptx
 # Local private samples and generated visual checks
 artifacts/
+.workbuddy-ai/

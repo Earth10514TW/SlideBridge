@@ -9,7 +9,7 @@ endif()
 add_executable(origin-bridge main.cpp)
 target_compile_features(origin-bridge PRIVATE cxx_std_17)
 target_compile_definitions(origin-bridge PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
-target_link_libraries(origin-bridge PRIVATE ole32 uuid user32)
+target_link_libraries(origin-bridge PRIVATE ole32 uuid user32 gdi32 gdiplus)
 
 # wmain is the Unicode entry point used by both MSVC and MinGW.  Keep the
 # MinGW target as a console application so inspect/probe diagnostics remain

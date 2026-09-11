@@ -1,6 +1,6 @@
 # SlideBridge handoff
 
-Updated: 2026-09-10 (Asia/Taipei). Origin OLE bidirectional writeback complete.
+Updated: 2026-09-11 (Asia/Taipei). Mac PowerPoint interactive integration, shape-to-OLE geometric resolution, in-place writeback, and hot reload complete.
 
 ## Current direction: Origin editing without Windows PowerPoint
 
@@ -8,13 +8,27 @@ The current implementation and reproducible commands are documented in [docs/ori
 
 Completed components:
 1. **`prepare-ole`**: Extracts embedded OLE storage safely to session directory with source SHA-256 and relationship manifest.
-2. **Native Windows x64 OLE host (`native/origin-bridge/`)**: Cross-compiled with MinGW `-static`. Verified interactive roundtrip on Parallels Windows 11 VM with OriginPro 2021: user edited X-axis label from `Time (hr)` to `TT (hr)`, saved, and reopened verifying binary persistence (`reopen-verify.bin`, SHA-256: `267d50b4...`).
-3. **`writeback-ole`**: Implemented in `slidebridge/bridge.py` and `slidebridge/cli.py`. Enforces strict paired writeback (OLE binary + matching preview image), source presentation & target OLE SHA-256 conflict detection (`--force` bypass), atomic temp-file assembly, DrawingML / VML relationship rewriting (e.g. EMF to PNG redirection), and `[Content_Types].xml` maintenance.
-4. **Validation & Verification**:
-   - 39 Python unit tests (100% pass rate).
+2. **Native Windows x64 OLE host (`native/origin-bridge/`)**: Cross-compiled with MinGW `-static`.
+   - Verified interactive roundtrip on Parallels Windows 11 VM with OriginPro 2021: user edited X-axis label from `Time (hr)` to `TT (hr)`, saved, and reopened verifying binary persistence (`reopen-verify.bin`, SHA-256: `267d50b4...`).
+   - Added live visual preview canvas directly in the Helper UI via `IAdviseSink` and `OleDraw`, rendering Origin chart changes in real-time.
+   - Added automated dual-format preview export on save: exports both raw vector `edited.emf` (via `IDataObject(CF_ENHMETAFILE)` / `OleDraw`) and 300 DPI high-fidelity `edited.png` (via GDI+).
+3. **`writeback-ole`**: Implemented in `slidebridge/bridge.py` and `slidebridge/cli.py`. Enforces strict paired writeback (OLE binary + matching preview image), source presentation & target OLE SHA-256 conflict detection (`--force` bypass), atomic temp-file assembly, DrawingML / VML relationship rewriting (e.g. EMF to PNG redirection), and `[Content_Types].xml` maintenance. Supports `--in-place` with automatic `.sb_backup.pptx` backup and atomic replacement.
+4. **Seamless Mac-to-VM workflow (`slidebridge edit` & `slidebridge/vm.py`)**:
+   - Automated Parallels Desktop VM discovery (`detect_running_vm`) and path translation to `\\Mac\Home\...`.
+   - Automatic VM foreground activation and Helper launch via `prlctl exec`.
+   - Interactive chart discovery with slide and preview metadata (`list_ole_objects`).
+   - End-to-end orchestration: extracts OLE, pops up Windows Origin/Helper, waits for user save, and automatically writes back updated presentation.
+5. **Mac PowerPoint Interactive Integration (`slidebridge/powerpoint.py` & `slidebridge edit-active`)**:
+   - Query frontmost PowerPoint state via AppleScript (`get_active_powerpoint_state`).
+   - Sub-millipoint geometric resolution (`resolve_ole_from_selection`) matching selected PowerPoint shapes against PPTX DrawingML `xfrm` and OLE relationships, with fallback to shape names and single-chart auto-selection.
+   - Auto-save prior to extraction, atomic in-place writeback, and hot reload of presentation in PowerPoint navigating straight back to the edited slide.
+   - One-click installer (`scripts/install_mac_integration.sh`): installs `SlideBridge.scpt` into PowerPoint's Application Scripts folder, creates macOS Quick Action Service in `~/Library/Services/`, and provides standalone `artifacts/SlideBridge-Edit-Active.app`.
+6. **Validation & Verification**:
+   - 52 Python unit tests (100% pass rate).
    - 9 native EMF converter tests (100% pass rate).
    - 4 C++ persistence fault-injection tests (100% pass rate).
    - Real presentation writeback verified via `scripts/verify_package.py` on `/Users/earth/Downloads/presentation.pptx` (`artifacts/presentation_writeback_png.pptx`), with perfect CRC, relationships, and unaltered secondary OLE objects.
+   - Windows smoke script (`scripts/smoke_origin_bridge.ps1`) executed via `prlctl exec` on `Windows 11 Lite` VM and passed 100%, verifying OLE roundtrip and automated EMF+PNG generation.
 
 ## User objective and constraints
 
@@ -95,17 +109,54 @@ Rebuild patched converter:
 bash scripts/build_patched_emf2svg.sh
 ```
 
-## Git and shutdown state
+Build native Windows Origin Helper (cross-compile on macOS):
 
-Branch: main. Latest commits:
+```sh
+bash scripts/build_origin_bridge.sh
+```
 
-- `f4e7550` initial CLI and OLE-preserving repair.
-- `0ab6834` exact Windows PNG preview support.
-- `6d7c91e` minimal generic pen-width regression and diagnostic checkpoint.
-- `64b383d` fix: patch libemf2svg CREATEPEN pen-width bug and integrate patched build.
+Native C++ persistence test:
 
-## Previous converter verification follow-up
+```sh
+clang++ -std=c++17 -Wall -Wextra native/origin-bridge/save_sequence_test.cpp -o artifacts/bin/save-sequence-test
+artifacts/bin/save-sequence-test
+```
 
-1. Open `artifacts/presentation_auto.pptx` in PowerPoint and compare the 4 converted images against Windows references (`圖片1.png`, `圖片2.png`). Pen widths should now match; font/positioning differences are expected.
-2. Verify Windows Origin double-click editing still works on the new output.
-3. Decide whether the remaining font/positioning fidelity is acceptable or needs further work.
+Windows smoke test (PowerShell in Windows VM):
+
+```powershell
+.\scripts\smoke_origin_bridge.ps1 -Executable .\origin-bridge.exe -InputFile .\editable.bin -OutputDirectory .\smoke-results
+```
+
+## Git and current working state
+
+Branch: main. Working copy includes:
+- Windows Helper visual live preview canvas (`WM_PAINT`, `IAdviseSink`, `OleDraw`).
+- Dual-format preview auto-export on save (`edited.emf` + 300 DPI `edited.png`).
+- `-lgdi32 -lgdiplus` build integration and updated PowerShell smoke test.
+
+All 52 Python unit tests, 9 native EMF converter tests, and 4 C++ persistence tests pass 100%.
+
+## User Operation Guide (操作指南)
+
+### 方式一：Mac PowerPoint 內直覺跳轉編輯（推薦！）
+1. **在 Mac PowerPoint 點選任一 Origin 圖表**。
+2. 觸發方式任選一種：
+   - **快捷鍵**：按下你設定的快捷鍵（例如 `Cmd + Option + O`）。
+   - **應用選單**：點擊選單 `Microsoft PowerPoint -> 服務 (Services) -> 在 Origin 編輯 (SlideBridge)`。
+   - **獨立應用程式**：雙擊 `artifacts/SlideBridge-Edit-Active.app`（可放於 Dock 或 Raycast/Alfred）。
+   - **終端機**：執行 `./scripts/edit_active_presentation.sh`（或 `python3 -m slidebridge edit-active`）。
+3. **自動跨機編輯**：
+   - Parallels Windows 11 VM 自動躍升至前台，彈出 Helper 與 Origin 編輯視窗。
+   - 在 Origin 修改圖表（文字、樣式、數據），Helper 即時更新畫布。
+   - 點擊 Helper 的 **Save and Close**。
+4. **自動熱重載**：
+   - Mac PowerPoint 自動同步原地更新簡報並熱重載，畫面停留在原投影片，立即看到最新圖表！
+   - 原簡報自動於同目錄保留 `.sb_backup.pptx` 備份。
+
+### 方式二：終端機指定簡報編輯
+```sh
+python3 -m slidebridge edit /Users/earth/Downloads/presentation.pptx
+# 或使用包裝腳本：
+./scripts/edit_presentation.sh /Users/earth/Downloads/presentation.pptx
+```
