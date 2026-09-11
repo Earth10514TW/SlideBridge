@@ -6,12 +6,14 @@ from pathlib import Path
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 from xml.etree import ElementTree
 
 from slidebridge.bridge import prepare_ole, writeback_ole
 from slidebridge.core import SlideBridgeError
 from slidebridge.powerpoint import (
     _get_ordered_slide_parts,
+    default_session_parent,
     resolve_ole_from_selection,
 )
 
@@ -21,10 +23,10 @@ OLE_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/o
 IMAGE_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
 
 
-def _cfb_payload() -> bytes:
+def _cfb_payload(variant: int = 0) -> bytes:
     data = bytearray(512)
     data[:8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
-    data[24:32] = (0x0003003E).to_bytes(8, "little")
+    data[24:32] = (0x0003003E + variant).to_bytes(8, "little")
     return bytes(data)
 
 
@@ -208,8 +210,9 @@ class PowerPointIntegrationTests(unittest.TestCase):
         session = self.tmp_path / "session"
         prepare_ole(self.pptx, "ppt/embeddings/oleObject1.bin", session)
 
-        # Create updated OLE and updated preview in session
-        new_cfb = _cfb_payload()
+        # Create updated OLE and updated preview in session. The OLE must differ
+        # from the original, otherwise the unchanged-OLE guard rejects it.
+        new_cfb = _cfb_payload(variant=1)
         (session / "edited.bin").write_bytes(new_cfb)
         new_png = _minimal_png() + b"extra_png_bytes"
         (session / "edited.png").write_bytes(new_png)
@@ -232,6 +235,49 @@ class PowerPointIntegrationTests(unittest.TestCase):
         self.assertEqual(Path(rep["output"]).resolve(), self.pptx.resolve())
         with zipfile.ZipFile(self.pptx) as z:
             self.assertEqual(z.read("ppt/embeddings/oleObject1.bin"), new_cfb)
+
+
+class DefaultSessionParentTests(unittest.TestCase):
+    """The session must live under the home folder so the guest can reach it.
+
+    Regression: it used to be tempfile.gettempdir() (/var/folders/...), which
+    the Windows guest cannot address -- the helper failed with an opaque
+    ERROR_BAD_NET_NAME and no edited.bin was ever produced.
+    """
+
+    def test_uses_project_cache_when_the_checkout_is_under_home(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            project = home / "code" / "SlideBridge"
+            project.mkdir(parents=True)
+            with patch("pathlib.Path.home", return_value=home), patch(
+                "slidebridge.powerpoint.__file__", str(project / "slidebridge" / "powerpoint.py")
+            ):
+                parent = default_session_parent()
+        # Compared resolved: on macOS /var resolves to /private/var.
+        self.assertEqual(parent, (project / ".cache" / "sessions").resolve())
+
+    def test_falls_back_to_a_cache_dir_when_the_checkout_is_outside_home(self):
+        with tempfile.TemporaryDirectory() as home_td, tempfile.TemporaryDirectory() as other_td:
+            home = Path(home_td)
+            project = Path(other_td) / "SlideBridge"
+            project.mkdir()
+            with patch("pathlib.Path.home", return_value=home), patch(
+                "slidebridge.powerpoint.__file__", str(project / "slidebridge" / "powerpoint.py")
+            ):
+                parent = default_session_parent()
+        self.assertEqual(parent, (home / "Library" / "Caches" / "SlideBridge" / "sessions").resolve())
+
+    def test_result_is_always_under_home(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            with patch("pathlib.Path.home", return_value=home):
+                parent = default_session_parent()
+            parent.resolve().relative_to(home.resolve())
+
+    def test_never_returns_the_system_temp_directory(self):
+        parent = default_session_parent()
+        self.assertNotEqual(str(parent), tempfile.gettempdir())
 
 
 if __name__ == "__main__":

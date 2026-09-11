@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# edit_presentation.sh: CLI entrypoint to edit Origin charts in a PowerPoint file.
+# fix_presentation.sh: CLI and Finder entrypoint to repair EMF images in a PowerPoint file.
 #
 set -euo pipefail
 
@@ -19,4 +19,4 @@ if ! PYTHON="$(pick_python)"; then
   exit 1
 fi
 
-exec "${PYTHON}" -m slidebridge edit "$@"
+exec "${PYTHON}" -m slidebridge fix "$@"

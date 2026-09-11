@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Iterable
 from xml.etree import ElementTree
 
+from .svg_cleaner import optimize_emf_svg
+
 
 class SlideBridgeError(Exception):
     """Base exception raised for unreadable or unrepairable presentations."""
@@ -452,11 +454,12 @@ def _convert_media(
         if suffix == ".emf":
             # Prefer the project-local patched binary over the system copy.
             # Both lookups go through shutil.which so test mocks work.
-            local_bin = os.path.join(
-                os.path.dirname(os.path.dirname(__file__)),
-                "artifacts", "bin", "emf2svg-conv",
+            project_dir = os.path.dirname(os.path.dirname(__file__))
+            local_bin = (
+                shutil.which(os.path.join(project_dir, "bin", "emf2svg-conv"))
+                or shutil.which(os.path.join(project_dir, "artifacts", "bin", "emf2svg-conv"))
             )
-            emf_converter = shutil.which(local_bin) or shutil.which("emf2svg-conv")
+            emf_converter = local_bin or shutil.which("emf2svg-conv")
         if emf_converter:
             svg_temp = os.path.join(temporary_dir, "intermediate.svg")
             if os.path.exists(svg_temp):
@@ -468,6 +471,14 @@ def _convert_media(
                 raise RepairError(f"EMF to SVG conversion failed for {source_name}") from exc
             if result.returncode != 0 or not os.path.isfile(svg_temp):
                 raise RepairError(f"EMF to SVG conversion failed for {source_name}")
+            try:
+                with open(svg_temp, "r", encoding="utf-8", errors="replace") as f:
+                    raw_svg = f.read()
+                cleaned_svg = optimize_emf_svg(raw_svg)
+                with open(svg_temp, "w", encoding="utf-8") as f:
+                    f.write(cleaned_svg)
+            except Exception:
+                pass
             source_temp = svg_temp
         size_args = []
         if emf_converter:

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Build a patched emf2svg-conv binary from the local upstream checkout.
 # The patch is already applied in artifacts/upstream; this script just builds.
-# Output: artifacts/bin/emf2svg-conv
+# Output: bin/emf2svg-conv
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="${REPO_ROOT}/artifacts/upstream"
 BUILD="${SRC}/build"
-DEST="${REPO_ROOT}/artifacts/bin"
+DEST="${REPO_ROOT}/bin"
 
 if [ ! -d "${SRC}/src" ]; then
     echo "ERROR: upstream source not found at ${SRC}" >&2

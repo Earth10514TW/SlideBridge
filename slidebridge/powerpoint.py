@@ -17,7 +17,6 @@ import os
 import posixpath
 import re
 import subprocess
-import tempfile
 import uuid
 import zipfile
 from pathlib import Path
@@ -25,7 +24,7 @@ from xml.etree import ElementTree
 
 from .core import SlideBridgeError, _path_string
 from .bridge import prepare_ole, writeback_ole, list_ole_objects
-from .vm import detect_running_vm, launch_vm_helper
+from .vm import Guest, detect_guest, launch_vm_helper
 
 
 _EMU_PER_PT = 12700.0
@@ -33,6 +32,19 @@ _REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 _P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 _A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 _R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+
+
+def default_session_parent() -> Path:
+    """Return a directory the Windows guest can actually reach."""
+    home = Path.home().resolve()
+    project = Path(__file__).resolve().parent.parent
+    cache_dir = project / ".cache" / "sessions"
+    try:
+        cache_dir.resolve().relative_to(home)
+    except ValueError:
+        cache_dir = home / "Library" / "Caches" / "SlideBridge" / "sessions"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
 
 
 def _run_applescript(script: str) -> str:
@@ -307,6 +319,7 @@ def edit_active_presentation(
     vm_name: str | None = None,
     reload_after: bool = True,
     session_dir: os.PathLike[str] | str | None = None,
+    vm_backend: str | None = None,
 ) -> dict:
     """Full end-to-end workflow: detect selection, save, edit in VM, writeback, and reload."""
     # 1. Query PowerPoint
@@ -330,9 +343,8 @@ def edit_active_presentation(
     if session_dir is not None:
         chosen_session = Path(_path_string(session_dir))
     else:
-        temp_parent = Path(tempfile.gettempdir())
         unique_id = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        chosen_session = temp_parent / f"slidebridge-active-session-{unique_id}"
+        chosen_session = default_session_parent() / f"slidebridge-active-session-{unique_id}"
 
     prep_report = prepare_ole(
         input_path=pptx_path,
@@ -341,8 +353,11 @@ def edit_active_presentation(
     )
 
     # 5. Detect and Launch VM Helper
-    target_vm = vm_name or detect_running_vm()
-    ret = launch_vm_helper(vm_name=target_vm, session_dir=chosen_session)
+    if vm_name:
+        guest = Guest(vm_backend or "parallels", vm_name)
+    else:
+        guest = detect_guest(vm_backend)
+    ret = launch_vm_helper(guest, session_dir=chosen_session)
 
     edited_bin = chosen_session / "edited.bin"
     if not edited_bin.is_file():
@@ -365,7 +380,7 @@ def edit_active_presentation(
         "slide_index": slide_index,
         "shape_name": resolved["shape_name"],
         "member": member,
-        "vm": target_vm,
+        "vm": guest.name,
         "session": str(chosen_session),
         "in_place": in_place,
         "backup": writeback_report.get("backup"),

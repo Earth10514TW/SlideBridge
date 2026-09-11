@@ -124,32 +124,41 @@ def _find_preview_members(archive: zipfile.ZipFile, references: list[dict[str, s
         except ElementTree.ParseError:
             continue
 
-        target_ole = None
-        for element in root.iter():
-            if _local_name(element.tag) in {"oleobj", "oleobject"}:
-                for attr, val in element.attrib.items():
-                    if val == ole_rid and attr.rsplit("}", 1)[-1].lower() in {"id", "embed", "link"}:
-                        target_ole = element
-                        break
-                if target_ole is not None:
-                    break
+        # PowerPoint emits each OLE object twice inside <mc:AlternateContent>:
+        # an <mc:Choice> branch and an <mc:Fallback> branch, both carrying the
+        # same r:id. Only the Fallback branch holds the preview <p:pic> -- the
+        # Choice branch is a bare <p:oleObj><p:embed/></p:oleObj>. Taking the
+        # first match therefore picks the branch with no preview, and the
+        # writeback fails with "no preview images associated with OLE member".
+        # Collect every match and gather previews from all of them.
+        targets = [
+            element
+            for element in root.iter()
+            if _local_name(element.tag) in {"oleobj", "oleobject"}
+            and any(
+                val == ole_rid and attr.rsplit("}", 1)[-1].lower() in {"id", "embed", "link"}
+                for attr, val in element.attrib.items()
+            )
+        ]
 
-        if target_ole is None:
+        if not targets:
             continue
 
         preview_rids: set[str] = set()
-        for child in target_ole.iter():
-            if child is target_ole:
-                continue
-            for attr, val in child.attrib.items():
-                if attr.rsplit("}", 1)[-1].lower() in {"id", "embed", "link"} and val != ole_rid:
-                    preview_rids.add(val)
-
         spid = None
-        for attr, val in target_ole.attrib.items():
-            if attr.rsplit("}", 1)[-1].lower() in {"spid", "shapeid"}:
-                spid = val
-                break
+        for target_ole in targets:
+            for child in target_ole.iter():
+                if child is target_ole:
+                    continue
+                for attr, val in child.attrib.items():
+                    if attr.rsplit("}", 1)[-1].lower() in {"id", "embed", "link"} and val != ole_rid:
+                        preview_rids.add(val)
+
+            if spid is None:
+                for attr, val in target_ole.attrib.items():
+                    if attr.rsplit("}", 1)[-1].lower() in {"spid", "shapeid"}:
+                        spid = val
+                        break
 
         rels_part = _relationship_part_for(slide)
         if rels_part in names:
@@ -199,6 +208,84 @@ def _validate_cfb(data: bytes, member: str) -> None:
         raise SlideBridgeError(f"OLE member is not a Compound File: {member}")
     if len(data) < _CFB_MIN_SIZE:
         raise SlideBridgeError(f"OLE member has an incomplete Compound File header: {member}")
+
+
+#: Fraction of differing bytes below which a "new" OLE is treated as an
+#: untouched document. Origin rewrites a handful of metadata bytes even when the
+#: chart was never modified, so an exact comparison alone would miss the most
+#: common failure: the user edits the chart but never saves inside Origin, and
+#: the server serialises its unchanged document.
+_NEAR_IDENTICAL_RATIO = 0.001
+
+
+def _reject_unchanged_preview(
+    new_bytes: bytes,
+    archive: zipfile.ZipFile,
+    preview_members: list[str],
+    allow_unchanged: bool,
+) -> None:
+    """Refuse a writeback whose preview would look identical to the current one.
+
+    The Windows helper renders the preview from the OLE object's *cached*
+    presentation (``OlePres000``). Origin does not always refresh that cache --
+    its real document lives in ``Contents`` -- so the render can be a stale
+    image of the chart as it looked before the edit. Writing that back silently
+    makes the presentation appear unchanged even though the OLE binary really
+    did change. Catching it here turns a silent no-op into an explicit failure.
+    """
+    if allow_unchanged:
+        return
+
+    for name in preview_members:
+        try:
+            current = archive.read(name)
+        except KeyError:
+            continue
+        if current == new_bytes:
+            raise SlideBridgeError(
+                "the new preview image is byte-identical to the one already in the "
+                f"presentation ({name}), so the chart would still look unchanged.\n"
+                "This usually means the renderer returned a cached image instead of the "
+                "edited chart. Re-open the chart in Origin, make a visible change, press "
+                "Save inside Origin, then use the helper's Save.\n"
+                "Pass --allow-unchanged to write it back anyway."
+            )
+
+
+def _reject_unchanged_ole(
+    new_bytes: bytes, current_bytes: bytes, path: str | Path, allow_unchanged: bool
+) -> None:
+    """Refuse a writeback that cannot produce a visible change.
+
+    Deliberately independent of ``force``: ``edit-active`` always passes
+    ``force=True`` to skip the source-hash check, and that must not also
+    silence this one. Use ``allow_unchanged`` to override on purpose.
+    """
+    if allow_unchanged:
+        return
+
+    if new_bytes == current_bytes:
+        raise SlideBridgeError(
+            f"the edited OLE is byte-identical to the one already in the presentation: {path}\n"
+            "Nothing changed, so writing it back would have no visible effect.\n"
+            "In Origin, edit the chart and press Save before closing the helper "
+            "(the helper's own message is 'Save explicitly to commit')."
+        )
+
+    if len(new_bytes) != len(current_bytes):
+        return
+
+    differing = sum(1 for a, b in zip(new_bytes, current_bytes) if a != b)
+    ratio = differing / len(new_bytes)
+    if ratio < _NEAR_IDENTICAL_RATIO:
+        raise SlideBridgeError(
+            f"the edited OLE differs from the current one in only {differing} of "
+            f"{len(new_bytes)} bytes ({ratio:.4%}): {path}\n"
+            "That looks like re-serialised metadata rather than a chart edit, so writing it "
+            "back would have no visible effect.\n"
+            "In Origin, edit the chart and press Save before closing the helper. "
+            "Pass --allow-unchanged to write it back anyway."
+        )
 
 
 def _validate_preview(data: bytes, path: str | Path) -> str:
@@ -312,6 +399,7 @@ def writeback_ole(
     preview_path: os.PathLike[str] | str | None = None,
     force: bool = False,
     in_place: bool = False,
+    allow_unchanged: bool = False,
 ) -> dict:
     """Pair-write an edited OLE binary and its updated preview back into a presentation.
 
@@ -410,6 +498,7 @@ def writeback_ole(
 
         new_ole_bytes = chosen_ole_path.read_bytes()
         _validate_cfb(new_ole_bytes, str(chosen_ole_path))
+        _reject_unchanged_ole(new_ole_bytes, current_ole_data, chosen_ole_path, allow_unchanged)
 
         # Locate preview image (ENFORCE PAIRED WRITEBACK)
         chosen_preview_path: Path | None = None
@@ -439,6 +528,8 @@ def writeback_ole(
             preview_members = _find_preview_members(archive, manifest["references"])
         if not preview_members:
             raise SlideBridgeError(f"could not find any preview images associated with OLE member: {member}")
+
+        _reject_unchanged_preview(new_preview_bytes, archive, preview_members, allow_unchanged)
 
         updated_parts: dict[str, bytes] = {}
         new_members: dict[str, bytes] = {}
@@ -595,4 +686,143 @@ def list_ole_objects(input_path: os.PathLike[str] | str) -> list[dict]:
         archive.close()
 
 
-__all__ = ["prepare_ole", "writeback_ole", "list_ole_objects"]
+def default_session_parent() -> Path:
+    """Return a directory the Windows guest can reach under the user's home directory."""
+    home = Path.home().resolve()
+    project = Path(__file__).resolve().parent.parent
+    cache_dir = project / ".cache" / "sessions"
+    try:
+        cache_dir.resolve().relative_to(home)
+    except ValueError:
+        cache_dir = home / "Library" / "Caches" / "SlideBridge" / "sessions"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def edit_presentation(
+    input_path: os.PathLike[str] | str,
+    member: str | None = None,
+    output_path: os.PathLike[str] | str | None = None,
+    in_place: bool = False,
+    vm_name: str | None = None,
+    vm_backend: str | None = None,
+    session_dir: os.PathLike[str] | str | None = None,
+    force: bool = False,
+    allow_unchanged: bool = False,
+    interactive: bool = False,
+    on_status: typing.Callable[[str], None] | None = None,
+) -> dict:
+    """End-to-end presentation editing via the Windows Origin helper.
+
+    Deep module that orchestrates:
+    1. Scanning OLE objects in the presentation and selecting the target chart.
+    2. Atomic session preparation in a guest-reachable location.
+    3. Cross-VM invocation of the Windows Origin helper.
+    4. Integrity checks of the edited binary and exported previews.
+    5. Atomic paired writeback with conflict and unchanged data protection.
+    """
+    import datetime
+    import sys
+    import uuid
+
+    source_path = Path(_path_string(input_path))
+    if not source_path.is_file():
+        raise SlideBridgeError(f"presentation file not found: {source_path}")
+
+    ole_list = list_ole_objects(source_path)
+    if not ole_list:
+        raise SlideBridgeError(f"No embedded OLE objects found in presentation: {source_path}")
+
+    selected_member = member
+    if selected_member is None:
+        if len(ole_list) == 1:
+            selected_member = ole_list[0]["member"]
+            if on_status:
+                on_status(f"Found 1 Origin OLE object: {selected_member}")
+        else:
+            if interactive and sys.stdin.isatty():
+                if on_status:
+                    on_status(f"Found {len(ole_list)} Origin OLE objects in {source_path.name}:")
+                    for idx, item in enumerate(ole_list, start=1):
+                        slides_str = ", ".join(
+                            s.replace("ppt/slides/", "").replace(".xml", "") for s in item["slides"]
+                        )
+                        previews_str = ", ".join(p.replace("ppt/media/", "") for p in item["previews"])
+                        on_status(f"  [{idx}] {item['member']} (Slide {slides_str}, Preview: {previews_str})")
+
+                choice = None
+                try:
+                    raw = input(f"Select object to edit [1-{len(ole_list)}] (default: 1): ").strip()
+                    if raw:
+                        choice = int(raw)
+                except (ValueError, EOFError):
+                    pass
+                if not choice or choice < 1 or choice > len(ole_list):
+                    choice = 1
+                selected_member = ole_list[choice - 1]["member"]
+                if on_status:
+                    on_status(f"Selected: {selected_member}")
+            else:
+                selected_member = ole_list[0]["member"]
+                if on_status:
+                    on_status(f"Defaulting to first Origin OLE object: {selected_member}")
+
+    if session_dir is not None:
+        chosen_session = Path(_path_string(session_dir))
+    else:
+        unique_id = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        chosen_session = default_session_parent() / f"slidebridge-edit-session-{unique_id}"
+
+    if on_status:
+        on_status(f"Preparing OLE session: {chosen_session}")
+    prepare_ole(source_path, selected_member, chosen_session)
+
+    from .vm import Guest, detect_guest, launch_vm_helper
+
+    if vm_name:
+        guest = Guest(vm_backend or "parallels", vm_name)
+    else:
+        guest = detect_guest(vm_backend)
+
+    if on_status:
+        on_status(f"Launching Windows Helper in {guest.backend} VM '{guest.name}'...")
+        on_status("Please edit the chart in Origin, then click 'Save and Close' in the Helper window.")
+
+    ret = launch_vm_helper(guest, chosen_session)
+    if ret != 0 and on_status:
+        on_status(f"Notice: Helper process exited with code {ret}.")
+
+    edited_bin = chosen_session / "edited.bin"
+    if not edited_bin.is_file():
+        raise SlideBridgeError("No edited.bin found in session; edit was cancelled or failed.")
+
+    if in_place:
+        chosen_output = source_path
+    elif output_path:
+        chosen_output = Path(_path_string(output_path))
+    else:
+        counter = 1
+        cand = source_path.with_name(f"{source_path.stem}_updated{source_path.suffix}")
+        while cand.exists():
+            cand = source_path.with_name(f"{source_path.stem}_updated_{counter}{source_path.suffix}")
+            counter += 1
+        chosen_output = cand
+
+    if on_status:
+        on_status("Detected saved OLE object. Writing back into presentation...")
+
+    report = writeback_ole(
+        source_path,
+        chosen_session,
+        output_path=chosen_output,
+        force=force,
+        in_place=in_place,
+        allow_unchanged=allow_unchanged,
+    )
+    report["session"] = str(chosen_session)
+    report["member"] = selected_member
+    report["vm"] = guest.name
+    return report
+
+
+__all__ = ["prepare_ole", "writeback_ole", "list_ole_objects", "default_session_parent", "edit_presentation"]

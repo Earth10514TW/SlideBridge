@@ -1,0 +1,117 @@
+diff --git a/src/lib/emf2svg_rec_bitmap.c b/src/lib/emf2svg_rec_bitmap.c
+index 8532399..5efe58b 100644
+--- a/src/lib/emf2svg_rec_bitmap.c
++++ b/src/lib/emf2svg_rec_bitmap.c
+@@ -61,9 +61,15 @@ void U_EMRBITBLT_draw(const char *contents, FILE *out, drawingStates *states) {
+     // if no bitmap, check for pattern brush
+     // Should fill the output with the current brush and the raster operation
+     if (pEmr->cbBitsSrc == 0) {
+-        char style[256];
+-        if (pEmr->dwRop == U_NOOP)
++        /* SlideBridge fix: PATINVERT (0x005a0049) and DSTINVERT (0x00550009)
++         * are XOR / inverting raster operations, frequently used by Origin and
++         * Windows GDI programs as transparency brackets around shaded shapes.
++         * Rendering them as opaque solid rectangles destroys the graphic with
++         * opaque blocker bars. Skip them just like U_NOOP. */
++        if (pEmr->dwRop == U_NOOP || pEmr->dwRop == U_PATINVERT ||
++            pEmr->dwRop == U_DSTINVERT)
+             return;
++        char style[256];
+         if (states->currentDeviceContext.fill_mode == U_BS_MONOPATTERN) {
+             sprintf(style, "fill:url(#img-%d-ref);",
+                     states->currentDeviceContext.fill_idx);
+diff --git a/src/lib/emf2svg_utils.c b/src/lib/emf2svg_utils.c
+index 5aba05d..dcdd048 100644
+--- a/src/lib/emf2svg_utils.c
++++ b/src/lib/emf2svg_utils.c
+@@ -318,8 +318,25 @@ void fill_draw(drawingStates *states, FILE *out, bool *filled, bool *stroked) {
+         *filled = true;
+         break;
+     case U_BS_MONOPATTERN:
+-        fprintf(out, "fill=\"#img-%d-ref\" ",
+-                states->currentDeviceContext.fill_idx);
++        /* SlideBridge fix: Origin and Windows GDI applications simulate
++         * semi-transparent shaded area fills (such as peak curve fits) and
++         * textured experimental data curves by using 1-bpp monochrome stipple
++         * patterns with PATINVERT bracketing.
++         * In modern SVG, render this with true semi-transparent vector fill:
++         * - colored brush: opacity 0.55 for authentic soft peak fit deconvolution
++         * - black brush: opacity 0.50 matching Windows GDI 50% stipple dithering */
++        if (states->currentDeviceContext.fill_red != 0 ||
++            states->currentDeviceContext.fill_green != 0 ||
++            states->currentDeviceContext.fill_blue != 0) {
++            fprintf(out, "%s", fill_rule);
++            fprintf(out, "fill=\"#%02X%02X%02X\" fill-opacity=\"0.55\" ",
++                    states->currentDeviceContext.fill_red,
++                    states->currentDeviceContext.fill_green,
++                    states->currentDeviceContext.fill_blue);
++        } else {
++            fprintf(out, "%s", fill_rule);
++            fprintf(out, "fill=\"#000000\" fill-opacity=\"0.50\" ");
++        }
+         *filled = true;
+         break;
+     case U_BS_HATCHED:
+@@ -982,11 +999,22 @@ void text_style_draw(FILE *out, drawingStates *states, POINT_D Org) {
+         orientation = 1;
+     }
+ 
++    uint16_t align = states->currentDeviceContext.text_align;
++    double pos_x = Org.x;
++    double pos_y = Org.y;
++    if ((align & U_TA_BASELINE) == U_TA_BASELINE) {
++        pos_y = Org.y;
++    } else if ((align & U_TA_BOTTOM) == U_TA_BOTTOM) {
++        pos_y = Org.y;
++    } else {
++        pos_y = Org.y + font_height * 0.9;
++    }
++
+     if (states->currentDeviceContext.font_escapement != 0) {
+-        fprintf(out, "transform=\"rotate(%d, %.4f, %.4f) translate(0, %.4f)\" ",
++        fprintf(out, "transform=\"rotate(%d, %.4f, %.4f)\" ",
+                 (orientation *
+                  (int)states->currentDeviceContext.font_escapement / 10),
+-                Org.x, (Org.y + font_height * 0.9), font_height * 0.9);
++                pos_x, pos_y);
+     }
+ 
+     if (states->text_layout == U_LAYOUT_RTL) {
+@@ -1013,7 +1041,6 @@ void text_style_draw(FILE *out, drawingStates *states, POINT_D Org) {
+                 states->currentDeviceContext.font_weight);
+ 
+     // horizontal position
+-    uint16_t align = states->currentDeviceContext.text_align;
+     if ((align & U_TA_CENTER) == U_TA_CENTER) {
+         fprintf(out, "text-anchor=\"middle\" ");
+     } else if ((align & U_TA_CENTER2) == U_TA_CENTER2) {
+@@ -1024,14 +1051,7 @@ void text_style_draw(FILE *out, drawingStates *states, POINT_D Org) {
+         fprintf(out, "text-anchor=\"start\" ");
+     }
+     // vertical position
+-    if ((align & U_TA_BOTTOM) == U_TA_BOTTOM) {
+-        fprintf(out, "x=\"%.4f\" y=\"%.4f\" ", Org.x, Org.y);
+-    } else if ((align & U_TA_BASELINE) == U_TA_BASELINE) {
+-        fprintf(out, "x=\"%.4f\" y=\"%.4f\" ", Org.x, Org.y);
+-    } else {
+-        fprintf(out, "x=\"%.4f\" y=\"%.4f\" ", Org.x,
+-                Org.y + font_height * 0.9);
+-    }
++    fprintf(out, "x=\"%.4f\" y=\"%.4f\" ", pos_x, pos_y);
+     fprintf(out, "font-size=\"%.4f\" ", font_height);
+ }
+ 
+@@ -1876,6 +1896,13 @@ void add_new_seg(PATH **path, uint8_t type) {
+ }
+ 
+ void clipset_draw(drawingStates *states, FILE *out) {
++    /* SlideBridge fix: if a world transform is active (<g transform="matrix(...)">),
++     * the clipPath was generated in the root/device coordinate system, but SVG
++     * evaluates clip-path in the local coordinate system of the referencing element.
++     * This mis-scales the clip path (e.g. 4x smaller) and erroneously clips out
++     * valid content such as Origin peak curve polygons. */
++    if (states->transform_open)
++        return;
+     int clipID = states->currentDeviceContext.clipID;
+     if (clipID)
+         fprintf(out, " clip-path=\"url(#clip-%d)\" ", clipID);

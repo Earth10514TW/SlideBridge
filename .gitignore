@@ -5,7 +5,11 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+bin/
+.build/
+.cache/
 *.pptx
-# Local private samples and generated visual checks
+# Local private samples and legacy artifacts
 artifacts/
 .workbuddy-ai/
+.tmp/

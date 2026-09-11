@@ -91,3 +91,53 @@ class NativeTextTests(unittest.TestCase):
         self.assertTrue(elements)
         self.assertIsNone(elements[0].get('transform'))
 
+
+@unittest.skipUnless(os.environ.get('SLIDEBRIDGE_TEST_EMF2SVG'), 'native backend not selected')
+class NativeRasterAndPatternTests(unittest.TestCase):
+    def render_emf(self, emf_bytes):
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = Path(directory) / 'test.emf', Path(directory) / 'test.svg'
+            source.write_bytes(emf_bytes)
+            subprocess.run([os.environ['SLIDEBRIDGE_TEST_EMF2SVG'], '-i', str(source), '-o', str(target)],
+                           capture_output=True, check=True, timeout=30)
+            return ET.parse(target).getroot()
+
+    def test_bitblt_patinvert_suppressed(self):
+        """PATINVERT (0x005A0049) blits used for Win32 GDI XOR bracketing must not render opaque blocker paths."""
+        from emf_fixture import bitblt_emf
+        root = self.render_emf(bitblt_emf(dwRop=0x005A0049))
+        paths = [e for e in root.iter() if e.tag.endswith('path')]
+        self.assertEqual(len(paths), 0)
+
+    def test_bitblt_dstinvert_suppressed(self):
+        """DSTINVERT (0x00550009) inverting blits must not render opaque blocker paths."""
+        from emf_fixture import bitblt_emf
+        root = self.render_emf(bitblt_emf(dwRop=0x00550009))
+        paths = [e for e in root.iter() if e.tag.endswith('path')]
+        self.assertEqual(len(paths), 0)
+
+    def test_bitblt_patcopy_rendered(self):
+        """Standard PATCOPY (0x00F00021) pattern blits must render filled rectangle paths."""
+        from emf_fixture import bitblt_emf
+        root = self.render_emf(bitblt_emf(dwRop=0x00F00021))
+        paths = [e for e in root.iter() if e.tag.endswith('path')]
+        self.assertEqual(len(paths), 1)
+
+    def test_monopattern_renders_semitransparent_vector_fill(self):
+        """1-bpp monochrome stipple patterns with DC brush color render semi-transparent vector fill."""
+        from emf_fixture import monopattern_emf
+        root = self.render_emf(monopattern_emf(0x93, 0xBC, 0x93))
+        paths = [e for e in root.iter() if e.tag.endswith('path')]
+        self.assertTrue(paths)
+        self.assertEqual(paths[0].get('fill'), '#93BC93')
+        self.assertEqual(paths[0].get('fill-opacity'), '0.55')
+
+    def test_monopattern_black_renders_stipple_opacity(self):
+        """1-bpp monochrome stipple patterns with black DC brush render 50% opacity matching GDI dithering."""
+        from emf_fixture import monopattern_emf
+        root = self.render_emf(monopattern_emf(0, 0, 0))
+        paths = [e for e in root.iter() if e.tag.endswith('path')]
+        self.assertTrue(paths)
+        self.assertEqual(paths[0].get('fill'), '#000000')
+        self.assertEqual(paths[0].get('fill-opacity'), '0.50')
+

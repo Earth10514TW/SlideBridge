@@ -12,6 +12,7 @@
 #include <ole2.h>
 #include <oleidl.h>
 #include <objbase.h>
+#include <oleauto.h>
 
 #include <algorithm>
 namespace Gdiplus {
@@ -59,13 +60,70 @@ std::wstring GetFilename(const std::wstring& path) {
   return path;
 }
 
+std::wstring GetDirectoryOf(const std::wstring& path) {
+  size_t lastSlash = path.find_last_of(L"/\\");
+  if (lastSlash == std::wstring::npos) {
+    return std::wstring();
+  }
+  return path.substr(0, lastSlash);
+}
+
+bool FileExists(const std::wstring& path) {
+  const DWORD attributes = GetFileAttributesW(path.c_str());
+  return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// Turns an HRESULT built by HRESULT_FROM_WIN32 back into a readable Win32
+// error name. Without this the caller only sees 0x80070043, which is far less
+// useful than "ERROR_BAD_NET_NAME".
+std::wstring Win32ErrorText(HRESULT hr) {
+  const unsigned long raw = static_cast<unsigned long>(hr);
+  if ((raw & 0xFFFF0000UL) != 0x80070000UL) {
+    return L"";
+  }
+  const DWORD code = static_cast<DWORD>(raw & 0xFFFFUL);
+  switch (code) {
+    case ERROR_FILE_EXISTS:
+    case ERROR_ALREADY_EXISTS:
+      return L" [ERROR_ALREADY_EXISTS: the output file is already there]";
+    case ERROR_BAD_NET_NAME:
+      return L" [ERROR_BAD_NET_NAME: this path is not reachable from the VM]";
+    case ERROR_PATH_NOT_FOUND:
+      return L" [ERROR_PATH_NOT_FOUND]";
+    case ERROR_FILE_NOT_FOUND:
+      return L" [ERROR_FILE_NOT_FOUND]";
+    case ERROR_ACCESS_DENIED:
+      return L" [ERROR_ACCESS_DENIED]";
+    case ERROR_SHARING_VIOLATION:
+      return L" [ERROR_SHARING_VIOLATION]";
+    default:
+      return L" [Win32 error " + std::to_wstring(static_cast<unsigned long>(code)) + L"]";
+  }
+}
+
 void Log(const std::wstring& message) {
   std::wcout << message << std::endl;
 }
 
 void LogHr(const std::wstring& operation, HRESULT hr) {
   std::wcout << operation << L": HRESULT=0x" << std::hex
-             << static_cast<unsigned long>(hr) << std::dec << std::endl;
+             << static_cast<unsigned long>(hr) << std::dec << Win32ErrorText(hr)
+             << std::endl;
+}
+
+// CopyFileW with bFailIfExists, reporting the real failure reason. The previous
+// message asserted "output must not already exist" regardless of cause, which
+// sent a genuine ERROR_BAD_NET_NAME hunt in the wrong direction.
+HRESULT CopyInputToOutput(const std::wstring& input, const std::wstring& output) {
+  if (CopyFileW(input.c_str(), output.c_str(), TRUE)) {
+    return S_OK;
+  }
+  HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
+  Log(L"CopyFileW failed (the output file must not already exist):");
+  Log(L"  input : " + input);
+  Log(L"  output: " + output);
+  LogHr(L"CopyFileW", hr);
+  return hr;
 }
 
 std::wstring GuidText(REFCLSID clsid) {
@@ -222,7 +280,12 @@ class OriginHost final : public IOleClientSite,
       return hr;
     }
     opened_ = true;
-    SetStatus(L"Origin opened. Use Save to commit changes.");
+    SetStatus(L"Origin opened. Edit chart, save in Origin, then click 'Save and Close'.");
+    const std::wstring sessionDir = GetDirectoryOf(outputBasePath_);
+    if (!sessionDir.empty()) {
+      Log(L"Origin opened for session: " + sessionDir);
+      Log(L"Auto-export will capture preview.png upon Save.");
+    }
     return S_OK;
   }
 
@@ -235,6 +298,109 @@ class OriginHost final : public IOleClientSite,
       LogHr(L"OleRun", hr);
     }
     return hr;
+  }
+
+  // Drives Origin's internal expGraph command via COM Automation (Origin.ApplicationSI)
+  // to export the active graph window as preview.png into the session folder.
+  bool AutoExportOriginGraph(const std::wstring& sessionDir) {
+    if (sessionDir.empty()) {
+      return false;
+    }
+    CLSID clsid{};
+    HRESULT hr = CLSIDFromProgID(L"Origin.ApplicationSI", &clsid);
+    if (FAILED(hr)) {
+      hr = CLSIDFromProgID(L"Origin.Application", &clsid);
+    }
+    if (FAILED(hr)) {
+      LogHr(L"CLSIDFromProgID for Origin COM Automation", hr);
+      return false;
+    }
+
+    IDispatch* pApp = nullptr;
+    hr = CoCreateInstance(clsid, nullptr, CLSCTX_LOCAL_SERVER, IID_IDispatch,
+                          reinterpret_cast<void**>(&pApp));
+    if (FAILED(hr) || !pApp) {
+      LogHr(L"CoCreateInstance(Origin COM Application)", hr);
+      return false;
+    }
+
+    DISPID dispidExecute = 0;
+    OLECHAR* memberName = const_cast<OLECHAR*>(L"Execute");
+    hr = pApp->GetIDsOfNames(IID_NULL, &memberName, 1, LOCALE_USER_DEFAULT,
+                             &dispidExecute);
+    if (FAILED(hr)) {
+      LogHr(L"GetIDsOfNames(Execute)", hr);
+      pApp->Release();
+      return false;
+    }
+
+    std::wstring labTalkCmd =
+        L"expGraph type:=png filename:=\"preview\" path:=\"" + sessionDir +
+        L"\" overwrite:=replace;";
+
+    BSTR bstrCmd = SysAllocString(labTalkCmd.c_str());
+    if (!bstrCmd) {
+      pApp->Release();
+      return false;
+    }
+
+    VARIANT arg;
+    VariantInit(&arg);
+    arg.vt = VT_BSTR;
+    arg.bstrVal = bstrCmd;
+
+    DISPPARAMS params{};
+    params.rgvarg = &arg;
+    params.cArgs = 1;
+    params.cNamedArgs = 0;
+
+    VARIANT varResult;
+    VariantInit(&varResult);
+    EXCEPINFO excepInfo{};
+    UINT argErr = 0;
+
+    hr = pApp->Invoke(dispidExecute, IID_NULL, LOCALE_USER_DEFAULT,
+                      DISPATCH_METHOD, &params, &varResult, &excepInfo, &argErr);
+
+    VariantClear(&arg);
+    VariantClear(&varResult);
+    pApp->Release();
+
+    if (FAILED(hr)) {
+      LogHr(L"Origin COM Execute(expGraph)", hr);
+      return false;
+    }
+
+    std::wstring previewPng = sessionDir + L"\\preview.png";
+    if (FileExists(previewPng)) {
+      Log(L"Origin COM Auto-Export succeeded: " + previewPng);
+      return true;
+    } else {
+      Log(L"Origin COM Execute returned S_OK, but preview.png was not found at: " + previewPng);
+      return false;
+    }
+  }
+
+  // A preview the user exported from Origin into the session folder.
+  //
+  // Origin keeps its live document in the "Contents" stream but does not
+  // refresh the OLE presentation cache ("OlePres000/001") after an edit, and it
+  // will not render live in OLEIVERB_OPEN mode either -- so our own render can
+  // only ever show the chart as it looked before the change. Exporting from
+  // Origin is the reliable route, and slidebridge prefers these filenames over
+  // the ones we write.
+  std::wstring ManualPreviewPath() const {
+    const std::wstring directory = GetDirectoryOf(outputBasePath_);
+    if (directory.empty()) {
+      return std::wstring();
+    }
+    for (const wchar_t* name : {L"preview.png", L"preview.emf"}) {
+      const std::wstring candidate = directory + L"\\" + name;
+      if (FileExists(candidate)) {
+        return candidate;
+      }
+    }
+    return std::wstring();
   }
 
   // This is the one save path used by the UI and by IOleClientSite::SaveObject.
@@ -276,6 +442,13 @@ class OriginHost final : public IOleClientSite,
     if (SUCCEEDED(hr)) {
       explicitlySaved_ = true;
       std::wstring statusMsg = L"Saved to the output storage.";
+
+      const std::wstring sessionDir = GetDirectoryOf(outputBasePath_);
+      bool autoExported = false;
+      if (!sessionDir.empty()) {
+        autoExported = AutoExportOriginGraph(sessionDir);
+      }
+
       if (!outputBasePath_.empty()) {
         std::wstring emfPath, pngPath;
         HRESULT exportHr = ExportPreview(outputBasePath_, &emfPath, &pngPath);
@@ -286,11 +459,22 @@ class OriginHost final : public IOleClientSite,
             if (!details.empty()) details += L", ";
             details += GetFilename(pngPath);
           }
-          statusMsg += L" Exported previews: " + details;
+          statusMsg += L" Exported OLE previews: " + details;
         } else {
           statusMsg += L" (Warning: preview export failed)";
         }
       }
+
+      if (autoExported) {
+        statusMsg += L" Auto-exported Origin graph: preview.png";
+      } else {
+        const std::wstring manualPreview = ManualPreviewPath();
+        if (!manualPreview.empty()) {
+          statusMsg += L" Your exported preview will be used: " + GetFilename(manualPreview);
+        }
+      }
+
+      Log(statusMsg);
       SetStatus(statusMsg);
       if (owner_) {
         InvalidateRect(owner_, nullptr, TRUE);
@@ -354,31 +538,22 @@ class OriginHost final : public IOleClientSite,
 
     bool emfSuccess = false;
 
-    // 1. Try IDataObject(CF_ENHMETAFILE)
-    IDataObject* dataObj = nullptr;
-    if (SUCCEEDED(object_->QueryInterface(IID_IDataObject, reinterpret_cast<void**>(&dataObj)))) {
-      FORMATETC fetc = { CF_ENHMETAFILE, nullptr, DVASPECT_CONTENT, -1, TYMED_ENHMF };
-      STGMEDIUM medium = {};
-      if (SUCCEEDED(dataObj->GetData(&fetc, &medium))) {
-        if (medium.tymed == TYMED_ENHMF && medium.hEnhMetaFile) {
-          HENHMETAFILE hCopy = CopyEnhMetaFileW(medium.hEnhMetaFile, tempEmfPath.c_str());
-          if (hCopy) {
-            DeleteEnhMetaFile(hCopy);
-            emfSuccess = true;
-          }
-        }
-        ReleaseStgMedium(&medium);
-      }
-      dataObj->Release();
-    }
+    // Ask the server to refresh its cached presentation before we read it.
+    // Origin keeps its real document in the "Contents" stream but does not
+    // always rewrite the "OlePres000/001" presentation cache after an edit, so
+    // GetData(CF_ENHMETAFILE) can hand back the chart as it looked *before* the
+    // change. Update() is the documented nudge for that cache.
+    object_->Update();
 
     SIZEL sizel{ 10000, 7500 };
     object_->GetExtent(DVASPECT_CONTENT, &sizel);
     if (sizel.cx <= 0) sizel.cx = 10000;
     if (sizel.cy <= 0) sizel.cy = 7500;
 
-    // 2. Fallback to OleDraw into CreateEnhMetaFileW if IDataObject failed
-    if (!emfSuccess) {
+    // 1. Prefer a live render: OleDraw asks the running server to draw its
+    //    current document. The cached GetData(CF_ENHMETAFILE) below is only a
+    //    fallback, because trusting it first is what produced stale previews.
+    {
       RECT rcHimetric = { 0, 0, sizel.cx, sizel.cy };
       HDC hdcMeta = CreateEnhMetaFileW(nullptr, tempEmfPath.c_str(), &rcHimetric, L"SlideBridge\0Origin Graph\0\0");
       if (hdcMeta) {
@@ -397,6 +572,27 @@ class OriginHost final : public IOleClientSite,
           }
           DeleteEnhMetaFile(hemf);
         }
+      }
+    }
+
+    // 2. Fallback: the object's own cached presentation metafile.
+    if (!emfSuccess) {
+      Log(L"Note: live OleDraw failed; falling back to the cached presentation metafile.");
+      IDataObject* dataObj = nullptr;
+      if (SUCCEEDED(object_->QueryInterface(IID_IDataObject, reinterpret_cast<void**>(&dataObj)))) {
+        FORMATETC fetc = { CF_ENHMETAFILE, nullptr, DVASPECT_CONTENT, -1, TYMED_ENHMF };
+        STGMEDIUM medium = {};
+        if (SUCCEEDED(dataObj->GetData(&fetc, &medium))) {
+          if (medium.tymed == TYMED_ENHMF && medium.hEnhMetaFile) {
+            HENHMETAFILE hCopy = CopyEnhMetaFileW(medium.hEnhMetaFile, tempEmfPath.c_str());
+            if (hCopy) {
+              DeleteEnhMetaFile(hCopy);
+              emfSuccess = true;
+            }
+          }
+          ReleaseStgMedium(&medium);
+        }
+        dataObj->Release();
       }
     }
 
@@ -998,13 +1194,12 @@ class EditApp final {
 
 HRESULT RunProbe(const std::wstring& input, const std::wstring& output,
                 REFCLSID requested) {
-  if (!CopyFileW(input.c_str(), output.c_str(), TRUE)) {
-    HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
-    LogHr(L"CopyFileW (output must not already exist)", hr);
+  HRESULT hr = CopyInputToOutput(input, output);
+  if (FAILED(hr)) {
     return hr;
   }
   IStorage* storage = nullptr;
-  HRESULT hr = OpenStorage(output, STGM_READWRITE | STGM_SHARE_EXCLUSIVE, &storage);
+  hr = OpenStorage(output, STGM_READWRITE | STGM_SHARE_EXCLUSIVE, &storage);
   if (FAILED(hr)) {
     LogHr(L"StgOpenStorage(output)", hr);
     return hr;
@@ -1093,13 +1288,12 @@ HRESULT RunInspect(const std::wstring& input) {
 
 HRESULT RunEdit(const std::wstring& input, const std::wstring& output,
                 REFCLSID requested) {
-  if (!CopyFileW(input.c_str(), output.c_str(), TRUE)) {
-    HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
-    LogHr(L"CopyFileW (output must not already exist)", hr);
+  HRESULT hr = CopyInputToOutput(input, output);
+  if (FAILED(hr)) {
     return hr;
   }
   IStorage* storage = nullptr;
-  HRESULT hr = OpenStorage(output, STGM_READWRITE | STGM_SHARE_EXCLUSIVE, &storage);
+  hr = OpenStorage(output, STGM_READWRITE | STGM_SHARE_EXCLUSIVE, &storage);
   if (FAILED(hr)) {
     LogHr(L"StgOpenStorage(output)", hr);
     return hr;

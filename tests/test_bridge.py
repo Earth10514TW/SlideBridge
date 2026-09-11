@@ -5,8 +5,10 @@ import tempfile
 import unittest
 import zipfile
 
-from slidebridge.bridge import prepare_ole, writeback_ole
+from unittest.mock import patch
+from slidebridge.bridge import _find_preview_members, prepare_ole, writeback_ole, edit_presentation
 from slidebridge.core import SlideBridgeError
+from slidebridge.vm import Guest
 
 
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -86,6 +88,111 @@ def package_with_preview(
         archive.writestr(f"ppt/media/{preview_name}", preview)
         archive.writestr("[Content_Types].xml", b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
     return path.read_bytes()
+
+
+def package_with_alternate_content(
+    path: Path,
+    ole: bytes,
+    preview: bytes,
+    preview_name: str = "image7.emf",
+) -> bytes:
+    """Build the real-world PowerPoint shape for an OLE object.
+
+    PowerPoint wraps each OLE in <mc:AlternateContent> with two branches that
+    both carry the same r:id: an <mc:Choice> holding a bare
+    <p:oleObj><p:embed/></p:oleObj>, and an <mc:Fallback> holding the preview
+    <p:pic>. The preview only exists in the second branch.
+    """
+    slide = (
+        '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+        'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+        'xmlns:v="urn:schemas-microsoft-com:vml">'
+        "<p:cSld><p:spTree><p:graphicFrame>"
+        "<p:nvGraphicFramePr><p:cNvPr id=\"11\" name=\"object 10\"/></p:nvGraphicFramePr>"
+        "<a:graphic><a:graphicData "
+        'uri="http://schemas.openxmlformats.org/presentationml/2006/ole">'
+        "<mc:AlternateContent>"
+        '<mc:Choice Requires="v">'
+        '<p:oleObj name="Graph" r:id="ole1" imgW="49532658" imgH="10012769" progId="Origin95.Graph">'
+        "<p:embed/></p:oleObj>"
+        "</mc:Choice>"
+        "<mc:Fallback>"
+        '<p:oleObj name="Graph" r:id="ole1" imgW="49532658" imgH="10012769" progId="Origin95.Graph">'
+        "<p:embed/>"
+        "<p:pic><p:nvPicPr><p:cNvPr id=\"11\" name=\"object 10\"/></p:nvPicPr>"
+        f'<p:blipFill><a:blip r:embed="img1"/></p:blipFill></p:pic>'
+        "</p:oleObj>"
+        "</mc:Fallback>"
+        "</mc:AlternateContent>"
+        "</a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>"
+    ).encode()
+    rels = (
+        f'<Relationships xmlns="{REL_NS}">'
+        f'<Relationship Id="ole1" Type="{OLE_REL}" Target="../embeddings/object1.bin"/>'
+        f'<Relationship Id="img1" Type="{IMAGE_REL}" Target="../media/{preview_name}"/>'
+        f"</Relationships>"
+    ).encode()
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("ppt/slides/slide1.xml", slide)
+        archive.writestr("ppt/slides/_rels/slide1.xml.rels", rels)
+        archive.writestr("ppt/embeddings/object1.bin", ole)
+        archive.writestr(f"ppt/media/{preview_name}", preview)
+        archive.writestr(
+            "[Content_Types].xml",
+            b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+        )
+    return path.read_bytes()
+
+
+class AlternateContentPreviewTests(unittest.TestCase):
+    """Regression: the preview lives in the mc:Fallback branch only.
+
+    The original code stopped at the first <p:oleObj> matching the r:id, which
+    is the preview-less mc:Choice branch. Writeback then failed with
+    "could not find any preview images associated with OLE member".
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.source = self.root / "input.pptx"
+
+    def test_preview_is_found_in_the_fallback_branch(self):
+        package_with_alternate_content(self.source, cfb_payload(), minimal_png(tag=b"preview"))
+        with zipfile.ZipFile(self.source) as archive:
+            found = _find_preview_members(
+                archive, [{"slide": "ppt/slides/slide1.xml", "relationship_id": "ole1"}]
+            )
+        self.assertEqual(found, ["ppt/media/image7.emf"])
+
+    def test_writeback_succeeds_end_to_end(self):
+        package_with_alternate_content(self.source, cfb_payload(0), minimal_png(tag=b"old"))
+        session = self.root / "session"
+        prepare_ole(self.source, "ppt/embeddings/object1.bin", session)
+
+        (session / "edited.bin").write_bytes(cfb_payload(1))
+        (session / "edited.png").write_bytes(minimal_png(tag=b"new"))
+
+        output = self.root / "out.pptx"
+        report = writeback_ole(self.source, session, output_path=output)
+
+        self.assertEqual(report["status"], "success")
+        self.assertEqual(report["preview_members"], ["ppt/media/image7.emf"])
+        with zipfile.ZipFile(output) as archive:
+            self.assertEqual(
+                archive.read("ppt/embeddings/object1.bin"), cfb_payload(1)
+            )
+            self.assertIn(b"image7.png", archive.read("ppt/slides/_rels/slide1.xml.rels"))
+
+    def test_manifest_records_the_preview(self):
+        package_with_alternate_content(self.source, cfb_payload(), minimal_png())
+        session = self.root / "session"
+        prepare_ole(self.source, "ppt/embeddings/object1.bin", session)
+        manifest = json.loads((session / "manifest.json").read_text())
+        self.assertEqual(manifest["preview_members"], ["ppt/media/image7.emf"])
 
 
 class PrepareOleTests(unittest.TestCase):
@@ -375,6 +482,10 @@ class CliBridgeTests(unittest.TestCase):
         package_with_preview(self.source, orig_ole, orig_preview)
         prepare_ole(self.source, "ppt/embeddings/object1.bin", self.session)
 
+        # A genuinely different OLE, so this exercises the missing-preview path
+        # rather than tripping the unchanged-OLE guard.
+        (self.session / "edited.bin").write_bytes(cfb_payload(1))
+
         # Run without preview
         with patch("sys.stderr", new=StringIO()) as err:
             rc = main([
@@ -385,6 +496,273 @@ class CliBridgeTests(unittest.TestCase):
             ])
             self.assertEqual(rc, 1)
             self.assertIn("paired writeback requires a preview image", err.getvalue().lower())
+
+
+class UnchangedOleGuardTests(unittest.TestCase):
+    """A writeback that cannot change anything must fail loudly.
+
+    Regression: Origin re-serialises its document with a few bytes of metadata
+    even when the chart was never saved inside Origin, so the writeback
+    silently produced a presentation that still looked unchanged.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.source = self.root / "input.pptx"
+        self.session = self.root / "session"
+        self.output = self.root / "out.pptx"
+
+    def _prepare(self, ole: bytes) -> None:
+        package_with_preview(self.source, ole, minimal_png())
+        prepare_ole(self.source, "ppt/embeddings/object1.bin", self.session)
+        (self.session / "edited.png").write_bytes(minimal_png(tag=b"new"))
+
+    @staticmethod
+    def _large_cfb(size: int = 200_000) -> bytes:
+        data = bytearray(size)
+        data[:8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+        data[24:32] = (0x0003003E).to_bytes(8, "little")
+        return bytes(data)
+
+    def test_identical_ole_is_rejected_with_actionable_advice(self):
+        self._prepare(cfb_payload(0))
+        (self.session / "edited.bin").write_bytes(cfb_payload(0))
+
+        with self.assertRaises(SlideBridgeError) as ctx:
+            writeback_ole(self.source, self.session, output_path=self.output)
+
+        message = str(ctx.exception)
+        self.assertIn("byte-identical", message)
+        self.assertIn("press Save", message)
+        self.assertFalse(self.output.exists())
+
+    def test_metadata_only_difference_is_rejected(self):
+        """The observed real-world case: 5 bytes changed, chart untouched."""
+        ole = self._large_cfb()
+        self._prepare(ole)
+        tweaked = bytearray(ole)
+        for offset in (1132, 1133, 1134, 1135, 1136):
+            tweaked[offset] ^= 0xFF
+        (self.session / "edited.bin").write_bytes(bytes(tweaked))
+
+        with self.assertRaises(SlideBridgeError) as ctx:
+            writeback_ole(self.source, self.session, output_path=self.output)
+
+        self.assertIn("re-serialised metadata", str(ctx.exception))
+        self.assertFalse(self.output.exists())
+
+    def test_force_does_not_bypass_the_guard(self):
+        """edit-active always passes force=True for the source-hash check only."""
+        self._prepare(cfb_payload(0))
+        (self.session / "edited.bin").write_bytes(cfb_payload(0))
+
+        with self.assertRaises(SlideBridgeError):
+            writeback_ole(self.source, self.session, output_path=self.output, force=True)
+
+    def test_allow_unchanged_permits_a_deliberate_no_op(self):
+        self._prepare(cfb_payload(0))
+        (self.session / "edited.bin").write_bytes(cfb_payload(0))
+
+        report = writeback_ole(
+            self.source, self.session, output_path=self.output, allow_unchanged=True
+        )
+        self.assertEqual(report["status"], "success")
+
+    def test_a_real_change_still_writes_back(self):
+        self._prepare(cfb_payload(0))
+        (self.session / "edited.bin").write_bytes(cfb_payload(1))
+
+        report = writeback_ole(self.source, self.session, output_path=self.output)
+
+        self.assertEqual(report["status"], "success")
+        self.assertTrue(self.output.is_file())
+
+
+class UnchangedPreviewGuardTests(unittest.TestCase):
+    """Regression: the helper rendered from Origin's *cached* presentation.
+
+    Origin keeps its live document in the "Contents" stream but does not always
+    refresh the "OlePres000/001" presentation cache, so the exported preview
+    could be an image of the chart as it looked before the edit. The OLE binary
+    changed, so the OLE guard passed, and the stale image was written back
+    silently -- the chart in PowerPoint appeared unchanged.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.source = self.root / "input.pptx"
+        self.session = self.root / "session"
+        self.output = self.root / "out.pptx"
+        self.preview = minimal_png(tag=b"unchanged")
+
+    def _prepare(self) -> None:
+        package_with_preview(self.source, cfb_payload(0), self.preview)
+        prepare_ole(self.source, "ppt/embeddings/object1.bin", self.session)
+        # A real OLE change, so the OLE guard does not fire first.
+        (self.session / "edited.bin").write_bytes(cfb_payload(1))
+
+    def test_identical_preview_is_rejected_with_the_reason(self):
+        self._prepare()
+        (self.session / "edited.png").write_bytes(self.preview)
+
+        with self.assertRaises(SlideBridgeError) as ctx:
+            writeback_ole(self.source, self.session, output_path=self.output)
+
+        message = str(ctx.exception)
+        self.assertIn("byte-identical", message)
+        self.assertIn("cached image", message)
+        self.assertIn("press Save inside Origin", message)
+        self.assertFalse(self.output.exists())
+
+    def test_force_does_not_bypass_the_guard(self):
+        self._prepare()
+        (self.session / "edited.png").write_bytes(self.preview)
+
+        with self.assertRaises(SlideBridgeError):
+            writeback_ole(self.source, self.session, output_path=self.output, force=True)
+
+    def test_allow_unchanged_permits_it(self):
+        self._prepare()
+        (self.session / "edited.png").write_bytes(self.preview)
+
+        report = writeback_ole(
+            self.source, self.session, output_path=self.output, allow_unchanged=True
+        )
+        self.assertEqual(report["status"], "success")
+
+    def test_a_changed_preview_still_writes_back(self):
+        self._prepare()
+        (self.session / "edited.png").write_bytes(minimal_png(tag=b"changed"))
+
+        report = writeback_ole(self.source, self.session, output_path=self.output)
+
+        self.assertEqual(report["status"], "success")
+        self.assertTrue(self.output.is_file())
+
+
+class ManualPreviewPrecedenceTests(unittest.TestCase):
+    """A preview the user exports from Origin must beat the helper's own render.
+
+    Origin will not render an edited chart for us -- it neither refreshes the
+    OLE presentation cache nor draws live in OLEIVERB_OPEN mode -- so the
+    documented workflow is: export the graph from Origin into the session folder
+    as ``preview.png``. ``writeback_ole`` must then prefer that file over the
+    helper's stale ``edited.png``.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.source = self.root / "input.pptx"
+        self.session = self.root / "session"
+        self.output = self.root / "out.pptx"
+        self.original_preview = minimal_png(tag=b"original")
+
+    def _prepare(self) -> None:
+        package_with_preview(self.source, cfb_payload(0), self.original_preview)
+        prepare_ole(self.source, "ppt/embeddings/object1.bin", self.session)
+        (self.session / "edited.bin").write_bytes(cfb_payload(1))
+        # The helper's own render is stale: identical to what is already there.
+        (self.session / "edited.png").write_bytes(self.original_preview)
+
+    def test_stale_helper_render_on_its_own_is_rejected(self):
+        self._prepare()
+        with self.assertRaises(SlideBridgeError):
+            writeback_ole(self.source, self.session, output_path=self.output)
+
+    def test_user_exported_preview_wins_over_the_stale_render(self):
+        self._prepare()
+        exported = minimal_png(tag=b"exported-by-user")
+        (self.session / "preview.png").write_bytes(exported)
+
+        report = writeback_ole(self.source, self.session, output_path=self.output)
+
+        self.assertEqual(report["status"], "success")
+        self.assertEqual(report["preview_source"], str(self.session / "preview.png"))
+        with zipfile.ZipFile(self.output) as archive:
+            self.assertEqual(archive.read("ppt/media/image1.png"), exported)
+
+    def test_user_exported_emf_is_also_accepted(self):
+        """The original decks carry EMF previews, so that path must work too."""
+        package_with_preview(
+            self.source, cfb_payload(0), minimal_emf(b"original"), preview_name="image1.emf"
+        )
+        prepare_ole(self.source, "ppt/embeddings/object1.bin", self.session)
+        (self.session / "edited.bin").write_bytes(cfb_payload(1))
+        # The helper's own render is stale: identical to what is already there.
+        (self.session / "edited.emf").write_bytes(minimal_emf(b"original"))
+        exported = minimal_emf(b"exported-by-user")
+        (self.session / "preview.emf").write_bytes(exported)
+
+        report = writeback_ole(self.source, self.session, output_path=self.output)
+
+        self.assertEqual(report["status"], "success")
+        self.assertEqual(report["preview_format"], "emf")
+        with zipfile.ZipFile(self.output) as archive:
+            self.assertEqual(archive.read("ppt/media/image1.emf"), exported)
+
+
+class EditPresentationTests(unittest.TestCase):
+    """Verify the deep orchestration module slidebridge.bridge.edit_presentation."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.source = self.root / "deck.pptx"
+        self.output = self.root / "deck_out.pptx"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_missing_file_raises_error(self):
+        with self.assertRaises(SlideBridgeError) as ctx:
+            edit_presentation(self.root / "nonexistent.pptx")
+        self.assertIn("presentation file not found", str(ctx.exception))
+
+    def test_presentation_without_ole_raises_error(self):
+        with zipfile.ZipFile(self.source, "w") as arc:
+            arc.writestr("ppt/slides/slide1.xml", b"<p:sld/>")
+        with self.assertRaises(SlideBridgeError) as ctx:
+            edit_presentation(self.source)
+        self.assertIn("No embedded OLE objects found", str(ctx.exception))
+
+    def test_edit_presentation_success(self):
+        package_with_preview(
+            self.source, cfb_payload(0), minimal_png(10, 10, b"original"), preview_name="image1.png"
+        )
+
+        def mock_launch(guest, session_dir, **kwargs):
+            # Simulate Origin helper editing the object and auto-exporting preview
+            (session_dir / "edited.bin").write_bytes(cfb_payload(1))
+            (session_dir / "preview.png").write_bytes(minimal_png(20, 20, b"new-chart"))
+            return 0
+
+        with patch("slidebridge.vm.detect_guest", return_value=Guest("parallels", "Win11")), patch(
+            "slidebridge.vm.launch_vm_helper", side_effect=mock_launch
+        ):
+            report = edit_presentation(self.source, output_path=self.output)
+
+        self.assertEqual(report["status"], "success")
+        self.assertEqual(report["member"], "ppt/embeddings/object1.bin")
+        self.assertEqual(report["vm"], "Win11")
+        self.assertTrue(self.output.is_file())
+
+    def test_helper_failure_raises_error(self):
+        package_with_preview(
+            self.source, cfb_payload(0), minimal_png(10, 10, b"original"), preview_name="image1.png"
+        )
+
+        with patch("slidebridge.vm.detect_guest", return_value=Guest("parallels", "Win11")), patch(
+            "slidebridge.vm.launch_vm_helper", return_value=1
+        ):
+            with self.assertRaises(SlideBridgeError) as ctx:
+                edit_presentation(self.source, output_path=self.output)
+            self.assertIn("No edited.bin found in session", str(ctx.exception))
 
 
 if __name__ == "__main__":

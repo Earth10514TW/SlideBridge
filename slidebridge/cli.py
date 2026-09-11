@@ -3,29 +3,43 @@ import argparse
 import datetime
 import json
 from pathlib import Path
-import shutil
 import sys
 
 from .core import SlideBridgeError, repair, scan
-from .bridge import prepare_ole, writeback_ole, list_ole_objects
-from .vm import detect_running_vm, launch_vm_helper
+from .bridge import prepare_ole, writeback_ole, list_ole_objects, edit_presentation
+from .locate import ensure_login_path, find_executable
+
+#: Install locations for Inkscape, tried when it is not on PATH. Needed because
+#: GUI-launched runs (PowerPoint Quick Action, double-clicked .app) do not
+#: inherit Homebrew's PATH.
+_INKSCAPE_CANDIDATES = (
+    "/Applications/Inkscape.app/Contents/MacOS/inkscape",
+    "/opt/homebrew/bin/inkscape",
+    "/usr/local/bin/inkscape",
+    "/opt/local/bin/inkscape",
+)
 
 
 def find_inkscape():
-    executable = shutil.which("inkscape")
-    if executable:
-        return executable
-    mac = Path("/Applications/Inkscape.app/Contents/MacOS/inkscape")
-    return str(mac) if mac.is_file() else "inkscape"
+    return find_executable("inkscape", absolute_candidates=_INKSCAPE_CANDIDATES) or "inkscape"
 
 
 def main(argv=None):
+    # A GUI-launched run inherits launchd's minimal PATH, which omits Homebrew
+    # and /usr/local/bin. Recover the login PATH up front so every subprocess
+    # below resolves the same tools a terminal would.
+    ensure_login_path()
+
     parser = argparse.ArgumentParser(description="Repair PPTX graphics while preserving OLE data.")
     parser.add_argument("--version", action="version", version="SlideBridge 0.1.0")
     commands = parser.add_subparsers(dest="command", required=True)
     inspect = commands.add_parser("scan", help="List EMF/WMF assets and OLE previews")
     inspect.add_argument("input", type=Path)
     inspect.add_argument("--json", action="store_true")
+    doctor_cmd = commands.add_parser(
+        "doctor", help="Check the Mac PowerPoint one-click flow prerequisites"
+    )
+    doctor_cmd.add_argument("--json", action="store_true")
     bridge = commands.add_parser("prepare-ole", help="Extract an embedded OLE copy for the Windows Origin helper")
     bridge.add_argument("input", type=Path)
     bridge.add_argument("--member", required=True, help="Exact ppt/embeddings member to extract")
@@ -42,6 +56,11 @@ def main(argv=None):
     writeback.add_argument("--preview", type=Path, default=None, help="Path to updated preview image (PNG/EMF)")
     writeback.add_argument("--force", action="store_true", help="Bypass source presentation SHA-256 conflict check")
     writeback.add_argument("--in-place", action="store_true", help="Overwrite the input presentation in-place with backup")
+    writeback.add_argument(
+        "--allow-unchanged",
+        action="store_true",
+        help="Write back even when the edited OLE is identical to the current one (no visible change)",
+    )
     writeback.add_argument("--json", action="store_true")
     edit = commands.add_parser(
         "edit",
@@ -51,7 +70,13 @@ def main(argv=None):
     edit.add_argument("-m", "--member", default=None, help="Specific OLE member (e.g. ppt/embeddings/oleObject1.bin)")
     edit.add_argument("-o", "--output", type=Path, default=None, help="Output presentation path (default: <name>_updated.pptx)")
     edit.add_argument("--in-place", action="store_true", help="Overwrite presentation in-place with backup")
-    edit.add_argument("--vm", default=None, help="Parallels VM name (default: auto-detected running VM)")
+    edit.add_argument("--vm", default=None, help="Guest VM name (default: auto-detected running VM)")
+    edit.add_argument(
+        "--vm-backend",
+        default=None,
+        choices=("parallels", "utm", "vmware", "virtualbox"),
+        help="VM backend to drive (default: auto-detect)",
+    )
     edit.add_argument("--session", type=Path, default=None, help="Custom session directory")
     edit.add_argument("--force", action="store_true", help="Bypass source presentation SHA-256 conflict check")
     edit.add_argument("--json", action="store_true")
@@ -59,7 +84,13 @@ def main(argv=None):
         "edit-active",
         help="Edit the chart currently selected in Mac PowerPoint in Windows VM and hot-reload",
     )
-    edit_active.add_argument("--vm", default=None, help="Parallels VM name (default: auto-detected running VM)")
+    edit_active.add_argument("--vm", default=None, help="Guest VM name (default: auto-detected running VM)")
+    edit_active.add_argument(
+        "--vm-backend",
+        default=None,
+        choices=("parallels", "utm", "vmware", "virtualbox"),
+        help="VM backend to drive (default: auto-detect)",
+    )
     edit_active.add_argument("--no-in-place", action="store_true", help="Do not overwrite in-place; write to <name>_updated.pptx")
     edit_active.add_argument("--no-reload", action="store_true", help="Do not reload PowerPoint after writeback")
     edit_active.add_argument("--session", type=Path, default=None, help="Custom session directory")
@@ -74,6 +105,9 @@ def main(argv=None):
                      help="Use an exact Windows PNG export for a package EMF/WMF member; repeatable")
     args = parser.parse_args(argv)
     try:
+        if args.command == "doctor":
+            from .doctor import doctor as run_doctor
+            return 0 if run_doctor(args.json)["ready"] else 1
         if args.command == "scan":
             report = scan(args.input)
         elif args.command == "prepare-ole":
@@ -87,6 +121,7 @@ def main(argv=None):
                 preview_path=args.preview,
                 force=args.force,
                 in_place=args.in_place,
+                allow_unchanged=args.allow_unchanged,
             )
         elif args.command == "edit-active":
             from .powerpoint import edit_active_presentation
@@ -95,87 +130,21 @@ def main(argv=None):
                 vm_name=args.vm,
                 reload_after=not args.no_reload,
                 session_dir=args.session,
+                vm_backend=args.vm_backend,
             )
         elif args.command == "edit":
-            ole_list = list_ole_objects(args.input)
-            if not ole_list:
-                raise SlideBridgeError(f"No embedded OLE objects found in presentation: {args.input}")
-
-            selected_member = args.member
-            if selected_member is None:
-                if len(ole_list) == 1:
-                    selected_member = ole_list[0]["member"]
-                    if not args.json:
-                        print(f"Found 1 Origin OLE object: {selected_member}")
-                else:
-                    if not args.json:
-                        print(f"Found {len(ole_list)} Origin OLE objects in {args.input.name}:")
-                        for idx, item in enumerate(ole_list, start=1):
-                            slides_str = ", ".join(s.replace("ppt/slides/", "").replace(".xml", "") for s in item["slides"])
-                            previews_str = ", ".join(p.replace("ppt/media/", "") for p in item["previews"])
-                            print(f"  [{idx}] {item['member']} (Slide {slides_str}, Preview: {previews_str})")
-
-                    choice = None
-                    if sys.stdin.isatty():
-                        try:
-                            raw = input(f"Select object to edit [1-{len(ole_list)}] (default: 1): ").strip()
-                            if raw:
-                                choice = int(raw)
-                        except (ValueError, EOFError):
-                            pass
-                    if not choice or choice < 1 or choice > len(ole_list):
-                        choice = 1
-                    selected_member = ole_list[choice - 1]["member"]
-                    if not args.json:
-                        print(f"Selected: {selected_member}")
-
-            if args.session:
-                session_dir = args.session
-            else:
-                project_root = Path(__file__).resolve().parent.parent
-                artifacts_dir = project_root / "artifacts"
-                base_dir = artifacts_dir if artifacts_dir.is_dir() else Path.cwd()
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                session_dir = base_dir / f"ole-session-{timestamp}"
-
-            if not args.json:
-                print(f"Preparing OLE session: {session_dir}")
-            prepare_ole(args.input, selected_member, session_dir)
-
-            vm_name = args.vm or detect_running_vm()
-            if not args.json:
-                print(f"Launching Windows Helper in Parallels VM '{vm_name}'...")
-                print("Please edit the chart in Origin, then click 'Save and Close' in the Helper window.")
-
-            ret = launch_vm_helper(vm_name, session_dir)
-            if ret != 0 and not args.json:
-                print(f"Notice: Helper process exited with code {ret}.")
-
-            edited_bin = session_dir / "edited.bin"
-            if not edited_bin.is_file():
-                raise SlideBridgeError("No edited.bin found in session; edit was cancelled or failed.")
-
-            if args.in_place:
-                output_path = args.input
-            elif args.output:
-                output_path = args.output
-            else:
-                counter = 1
-                cand = args.input.with_name(f"{args.input.stem}_updated{args.input.suffix}")
-                while cand.exists():
-                    cand = args.input.with_name(f"{args.input.stem}_updated_{counter}{args.input.suffix}")
-                    counter += 1
-                output_path = cand
-
-            if not args.json:
-                print("Detected saved OLE object. Writing back into presentation...")
-
-            report = writeback_ole(
+            report = edit_presentation(
                 args.input,
-                session_dir,
-                output_path=output_path,
-                force=args.force,
+                member=args.member,
+                output_path=args.output,
                 in_place=args.in_place,
+                vm_name=args.vm,
+                vm_backend=args.vm_backend,
+                session_dir=args.session,
+                force=args.force,
+                allow_unchanged=False,
+                interactive=not args.json,
+                on_status=None if args.json else print,
             )
         else:
             output = args.output or args.input.with_name(args.input.stem + "_fixed.pptx")
