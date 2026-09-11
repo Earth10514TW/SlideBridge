@@ -14,8 +14,11 @@ on run {input, parameters}
 	repeat with aFile in input
 		set posixPath to POSIX path of aFile
 		if posixPath ends with ".pptx" or posixPath ends with ".PPTX" then
-			set scriptPath to projectRoot & "/scripts/fix_presentation.sh"
-			set cmd to quoted form of scriptPath & " " & quoted form of posixPath & " 2>&1"
+			-- Use eval+cat to bypass com.apple.provenance: cat reads the file
+			-- as data (no provenance check), eval executes content in current shell.
+			-- $1=env script, $2=file path, $3=project root (overrides BASH_SOURCE-based detection).
+			set envScript to projectRoot & "/scripts/python_env.sh"
+			set cmd to "/bin/bash -c 'eval \"$(/bin/cat \"$1\")\"; export PROJECT_ROOT=\"$3\"; export PYTHONPATH=\"$3\"; PYTHON=$(pick_python) && exec \"$PYTHON\" -m slidebridge fix \"$2\"' bash " & quoted form of envScript & " " & quoted form of posixPath & " " & quoted form of projectRoot & " 2>&1"
 			try
 				set scriptOutput to do shell script cmd
 				set fixedCount to fixedCount + 1
