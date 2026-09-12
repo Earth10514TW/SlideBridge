@@ -31,8 +31,7 @@ brew install libemf2svg
 python3 -m slidebridge scan input.pptx --json
 python3 -m slidebridge fix input.pptx                      # 預設輸出 input_fixed.pptx，自動選用 resvg
 python3 -m slidebridge fix input.pptx -o out.pptx --dpi 600
-python3 -m slidebridge fix input.pptx --renderer /path/to/resvg
-python3 -m slidebridge fix input.pptx --inkscape /path/to/inkscape  # 相容舊版參數
+python3 -m slidebridge fix input.pptx --renderer /path/to/resvg  # 指定自訂渲染器（支援 resvg 或 inkscape）
 python3 -m slidebridge doctor                              # 環境預檢
 ```
 

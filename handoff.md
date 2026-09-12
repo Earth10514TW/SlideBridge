@@ -112,7 +112,7 @@ clang++ -std=c++17 -Wall -Wextra native/origin-bridge/save_sequence_test.cpp -o 
 - 核心渲染管線正式整合純命令列工具 **`resvg`**（Rust 開發）：
   - 自動偵測系統 `resvg`，取代原本會喚醒 macOS GUI Dock 圖示彈跳的 Inkscape。
   - 原生支援 RGBA 透明背景，並透過 `png_white_to_transparent` 消除外部白邊。
-  - 支援 `--renderer`、`--transparent`、`--no-transparent`，同時保留 `--inkscape` 舊版參數相容性。
+  - 支援 `--renderer`（可指定 resvg 或 inkscape 自訂路徑）、`--transparent`、`--no-transparent`，已移除舊版 `--inkscape` 參數。
   - 160 項單元測試全數通過。
 
 ## 待辦

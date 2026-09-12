@@ -295,6 +295,26 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(ret or 0, 0)
         self.assertTrue(out.is_file())
 
+    def test_cli_rejects_removed_inkscape_flag(self):
+        with patch('sys.stderr'), self.assertRaises(SystemExit) as cm:
+            main(['fix', str(self.source), '--inkscape', '/custom/inkscape'])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_repair_kwargs_inkscape_fallback(self):
+        recorded_calls = []
+
+        def fake_run(cmd, **kwargs):
+            recorded_calls.append(list(cmd))
+            target = next(str(x).split('=', 1)[1] for x in cmd if str(x).startswith('--export-filename='))
+            Path(target).write_bytes(PNG)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        out = self.source.parent / "fallback_out.pptx"
+        with patch('slidebridge.core.subprocess.run', side_effect=fake_run):
+            repair(self.source, out, inkscape="/custom/legacy_inkscape", transparent=False)
+        self.assertTrue(out.is_file())
+        self.assertTrue(any("/custom/legacy_inkscape" in c[0] for c in recorded_calls))
+
 
 if __name__ == '__main__':
     unittest.main()

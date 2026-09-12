@@ -634,7 +634,6 @@ def _convert_single_item(
     output_name: str,
     raw_bytes: bytes,
     temporary_dir: str,
-    inkscape: str | None,
     dpi: int | float,
     project_dir: str,
     renderer: str | None = None,
@@ -713,9 +712,9 @@ def _convert_single_item(
             elif renderer and "inkscape" in os.path.basename(renderer).lower():
                 active_renderer = renderer
                 is_resvg = False
-            elif inkscape and "inkscape" in os.path.basename(inkscape).lower() and inkscape != "inkscape":
-                active_renderer = inkscape
-                is_resvg = False
+            elif renderer:
+                active_renderer = renderer
+                is_resvg = "resvg" in os.path.basename(renderer).lower()
             else:
                 # Prefer resvg when available; all candidate lookups go through shutil.which so test mocks work
                 local_resvg = (
@@ -728,10 +727,10 @@ def _convert_single_item(
                     active_renderer = resvg_bin
                     is_resvg = True
                 else:
-                    active_renderer = inkscape or find_executable("inkscape") or "inkscape"
+                    active_renderer = find_executable("inkscape") or "inkscape"
                     is_resvg = False
         else:
-            active_renderer = inkscape or find_executable("inkscape") or "inkscape"
+            active_renderer = renderer or find_executable("inkscape") or "inkscape"
             is_resvg = False
 
         if is_resvg:
@@ -809,7 +808,6 @@ def _convert_media(
     archive: zipfile.ZipFile,
     media_infos: Iterable[zipfile.ZipInfo],
     existing_names: set[str],
-    inkscape: str | None,
     dpi: int | float,
     temporary_dir: str,
     reference_previews: dict[str, bytes],
@@ -848,8 +846,15 @@ def _convert_media(
     if len(items_to_render) == 1 or max_workers <= 1:
         for idx, src, out, data in items_to_render:
             source_name, output_name, png, entry = _convert_single_item(
-                idx, src, out, data, temporary_dir, inkscape, dpi, project_dir,
-                renderer=renderer, transparent=transparent,
+                idx,
+                src,
+                out,
+                data,
+                temporary_dir,
+                dpi,
+                project_dir,
+                renderer=renderer,
+                transparent=transparent,
             )
             replacements[source_name] = output_name
             generated[output_name] = png
@@ -866,7 +871,6 @@ def _convert_media(
                     out,
                     data,
                     temporary_dir,
-                    inkscape,
                     dpi,
                     project_dir,
                     renderer,
@@ -891,12 +895,12 @@ def _convert_media(
 def repair(
     source: os.PathLike[str] | str,
     output: os.PathLike[str] | str,
-    inkscape: str | None = None,
+    renderer: str | None = None,
     dpi: int | float = 300,
     reference_previews: dict[str, os.PathLike[str] | str] | None = None,
     concurrency: int | None = None,
-    renderer: str | None = None,
     transparent: bool = True,
+    **kwargs,
 ) -> dict:
     """Convert package EMF/WMF media to PNG and write a new PPTX atomically.
 
@@ -908,6 +912,9 @@ def repair(
     ``reference_previews`` maps exact EMF/WMF package paths to trusted PNG
     exports, which are embedded byte-for-byte without resizing or rendering.
     """
+    if "inkscape" in kwargs and not renderer:
+        renderer = kwargs["inkscape"]
+
     source_path = _path_string(source)
     output_path = _path_string(output)
     source_real = os.path.realpath(source_path)
@@ -954,7 +961,6 @@ def repair(
                 archive,
                 media_infos,
                 all_names,
-                inkscape,
                 dpi,
                 temporary_dir,
                 reference_bytes,

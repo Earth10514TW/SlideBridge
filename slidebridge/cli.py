@@ -127,8 +127,7 @@ def main(argv=None):
         dest="concurrency",
         help="Number of concurrent conversion workers (default: min(cpu_count, 8))",
     )
-    fix.add_argument("--renderer", default=None, help="Path to SVG renderer executable (prefers resvg, falls back to inkscape)")
-    fix.add_argument("--inkscape", default=None, help="Path to Inkscape executable (legacy flag)")
+    fix.add_argument("--renderer", default=None, help="Path to SVG renderer executable (default: auto-detected resvg or inkscape)")
     fix.add_argument("--transparent", dest="transparent", action="store_true", default=True, help="Force transparent background for chart boundaries (default: true)")
     fix.add_argument("--no-transparent", dest="transparent", action="store_false", help="Do not force transparent background")
     fix.add_argument("--json", action="store_true")
@@ -189,7 +188,6 @@ def main(argv=None):
             report = repair(
                 args.input,
                 output,
-                inkscape=args.inkscape,
                 renderer=args.renderer,
                 transparent=args.transparent,
                 dpi=args.dpi,
