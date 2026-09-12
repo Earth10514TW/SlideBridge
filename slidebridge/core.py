@@ -640,6 +640,10 @@ def _convert_single_item(
     transparent: bool = True,
 ) -> tuple[str, str, bytes, dict]:
     suffix = posixpath.splitext(source_name)[1].lower() or ".emf"
+    if suffix != ".emf":
+        raise RepairError(
+            f"unsupported format for conversion: {source_name}. Only EMF is supported."
+        )
     item_dir = os.path.join(temporary_dir, f"media_{idx}")
     os.makedirs(item_dir, exist_ok=True)
     source_temp = os.path.join(item_dir, "source" + suffix)
@@ -651,126 +655,82 @@ def _convert_single_item(
 
         # libemf2svg avoids native EMF importer crashes on some macOS builds.
         # Keep this intermediate private; only the rendered PNG enters PPTX.
-        emf_converter = None
-        if suffix == ".emf":
-            # Prefer the project-local patched binary over the system copy.
-            # Both lookups go through shutil.which so test mocks work.
-            local_bin = (
-                shutil.which(os.path.join(project_dir, "bin", "emf2svg-conv"))
-                or shutil.which(os.path.join(project_dir, "artifacts", "bin", "emf2svg-conv"))
-            )
-            emf_converter = local_bin or shutil.which("emf2svg-conv")
+        local_bin = (
+            shutil.which(os.path.join(project_dir, "bin", "emf2svg-conv"))
+            or shutil.which(os.path.join(project_dir, "artifacts", "bin", "emf2svg-conv"))
+        )
+        emf_converter = local_bin or shutil.which("emf2svg-conv")
+        if not emf_converter:
+            raise RepairError(f"emf2svg-conv not found to convert {source_name}")
 
         scale_width = False
         scale_height = False
-        if emf_converter:
-            svg_temp = os.path.join(item_dir, "intermediate.svg")
-            try:
-                result = subprocess.run(
-                    [emf_converter, "-i", source_temp, "-o", svg_temp],
-                    capture_output=True,
-                    timeout=120,
-                    check=False,
-                )
-            except (OSError, subprocess.SubprocessError) as exc:
-                raise RepairError(f"EMF to SVG conversion failed for {source_name}") from exc
-            if result.returncode != 0 or not os.path.isfile(svg_temp):
-                raise RepairError(f"EMF to SVG conversion failed for {source_name}")
+        svg_temp = os.path.join(item_dir, "intermediate.svg")
+        try:
+            result = subprocess.run(
+                [emf_converter, "-i", source_temp, "-o", svg_temp],
+                capture_output=True,
+                timeout=120,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RepairError(f"EMF to SVG conversion failed for {source_name}") from exc
+        if result.returncode != 0 or not os.path.isfile(svg_temp):
+            raise RepairError(f"EMF to SVG conversion failed for {source_name}")
 
-            raw_svg = Path(svg_temp).read_text(encoding="utf-8", errors="replace")
-            try:
-                cleaned_svg = optimize_emf_svg(raw_svg)
-                Path(svg_temp).write_text(cleaned_svg, encoding="utf-8")
-                svg_content = cleaned_svg
-            except Exception:
-                svg_content = raw_svg
+        raw_svg = Path(svg_temp).read_text(encoding="utf-8", errors="replace")
+        try:
+            cleaned_svg = optimize_emf_svg(raw_svg)
+            Path(svg_temp).write_text(cleaned_svg, encoding="utf-8")
+            svg_content = cleaned_svg
+        except Exception:
+            svg_content = raw_svg
 
-            try:
-                # Direct in-memory parsing avoids redundant disk re-reads
-                svg_root = ElementTree.fromstring(svg_content)
-                bounds = [float(x) for x in svg_root.get("viewBox", "").replace(",", " ").split()]
-                if len(bounds) != 4:
-                    bounds = [0, 0, float(svg_root.get("width", "0")), float(svg_root.get("height", "0"))]
-                if len(bounds) == 4 and bounds[2] > 0 and bounds[3] > 0:
-                    longest = max(bounds[2:]) * dpi / 96
-                    if longest > 4096:
-                        if bounds[2] >= bounds[3]:
-                            scale_width = True
-                        else:
-                            scale_height = True
-            except (ElementTree.ParseError, ValueError) as exc:
-                raise RepairError(f"Invalid intermediate SVG for {source_name}") from exc
-            source_temp = svg_temp
+        try:
+            # Direct in-memory parsing avoids redundant disk re-reads
+            svg_root = ElementTree.fromstring(svg_content)
+            bounds = [float(x) for x in svg_root.get("viewBox", "").replace(",", " ").split()]
+            if len(bounds) != 4:
+                bounds = [0, 0, float(svg_root.get("width", "0")), float(svg_root.get("height", "0"))]
+            if len(bounds) == 4 and bounds[2] > 0 and bounds[3] > 0:
+                longest = max(bounds[2:]) * dpi / 96
+                if longest > 4096:
+                    if bounds[2] >= bounds[3]:
+                        scale_width = True
+                    else:
+                        scale_height = True
+        except (ElementTree.ParseError, ValueError) as exc:
+            raise RepairError(f"Invalid intermediate SVG for {source_name}") from exc
 
-        # Determine renderer:
-        # resvg only handles SVG files. If source_temp is not SVG, we must use inkscape.
-        is_resvg = False
-        if source_temp.lower().endswith(".svg"):
-            if renderer and "resvg" in os.path.basename(renderer).lower():
-                active_renderer = renderer
-                is_resvg = True
-            elif renderer and "inkscape" in os.path.basename(renderer).lower():
-                active_renderer = renderer
-                is_resvg = False
-            elif renderer:
-                active_renderer = renderer
-                is_resvg = "resvg" in os.path.basename(renderer).lower()
-            else:
-                # Prefer resvg when available; all candidate lookups go through shutil.which so test mocks work
-                resvg_bin = shutil.which("resvg")
-                if not resvg_bin:
-                    for candidate in _RESVG_CANDIDATES:
-                        resvg_bin = shutil.which(candidate)
-                        if resvg_bin:
-                            break
-                if resvg_bin and "resvg" in os.path.basename(resvg_bin).lower():
-                    active_renderer = resvg_bin
-                    is_resvg = True
-                else:
-                    active_renderer = find_executable(
-                        "inkscape",
-                        absolute_candidates=("/Applications/Inkscape.app/Contents/MacOS/inkscape",),
-                    ) or "inkscape"
-                    is_resvg = False
+        # Determine renderer: resvg is the only supported renderer
+        if renderer:
+            active_renderer = renderer
         else:
-            # Even an explicitly selected resvg cannot import EMF/WMF.
-            # Keep the native metafile fallback on an Inkscape executable.
-            if renderer and "resvg" not in os.path.basename(renderer).lower():
-                active_renderer = renderer
-            else:
-                active_renderer = find_executable(
-                    "inkscape",
-                    absolute_candidates=("/Applications/Inkscape.app/Contents/MacOS/inkscape",),
-                ) or "inkscape"
-            is_resvg = False
+            resvg_bin = shutil.which("resvg")
+            if not resvg_bin:
+                for candidate in _RESVG_CANDIDATES:
+                    resvg_bin = shutil.which(candidate)
+                    if resvg_bin:
+                        break
+            active_renderer = resvg_bin
 
-        if is_resvg:
-            cmd = [
-                active_renderer,
-                source_temp,
-                output_temp,
-                "--dpi",
-                str(int(round(dpi))),
-            ]
-            if scale_width:
-                cmd.extend(["--width", "4096"])
-            elif scale_height:
-                cmd.extend(["--height", "4096"])
-        else:
-            cmd = [
-                active_renderer,
-                source_temp,
-                f"--export-filename={output_temp}",
-                f"--export-dpi={dpi}",
-            ]
-            if transparent:
-                cmd.append("--export-background-opacity=0")
-            if scale_width:
-                cmd.append("--export-width=4096")
-            elif scale_height:
-                cmd.append("--export-height=4096")
+        if not active_renderer:
+            raise RepairError(
+                "resvg executable not found. Please install it with 'brew install resvg' or specify --renderer."
+            )
 
-        tool_name = "resvg" if is_resvg else "Inkscape"
+        cmd = [
+            active_renderer,
+            svg_temp,
+            output_temp,
+            "--dpi",
+            str(int(round(dpi))),
+        ]
+        if scale_width:
+            cmd.extend(["--width", "4096"])
+        elif scale_height:
+            cmd.extend(["--height", "4096"])
+
         try:
             completed = subprocess.run(
                 cmd,
@@ -780,7 +740,7 @@ def _convert_single_item(
                 timeout=120,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            raise RepairError(f"failed to convert {source_name} with {tool_name}") from exc
+            raise RepairError(f"failed to convert {source_name} with resvg") from exc
 
         if completed.returncode != 0 or not os.path.isfile(output_temp):
             stderr = completed.stderr or ""
@@ -790,7 +750,7 @@ def _convert_single_item(
                 else str(stderr)
             ).strip()
             suffix_detail = f": {detail[:300]}" if detail else ""
-            raise RepairError(f"failed to convert {source_name} with {tool_name}{suffix_detail}")
+            raise RepairError(f"failed to convert {source_name} with resvg{suffix_detail}")
 
         try:
             with open(output_temp, "rb") as handle:
@@ -799,7 +759,7 @@ def _convert_single_item(
             raise RepairError(f"failed to read rendered PNG for {source_name}") from exc
 
         if not _png_is_basic(png):
-            raise RepairError(f"{tool_name} produced an invalid PNG for {source_name}")
+            raise RepairError(f"resvg produced an invalid PNG for {source_name}")
 
         if transparent:
             png = png_white_to_transparent(png)
@@ -808,7 +768,7 @@ def _convert_single_item(
             source_name,
             output_name,
             png,
-            {"source": source_name, "path": output_name, "bytes": len(png), "method": "rendered", "engine": "resvg" if is_resvg else "inkscape"},
+            {"source": source_name, "path": output_name, "bytes": len(png), "method": "rendered", "engine": "resvg"},
         )
     finally:
         # Immediate cleanup of temporary intermediate files
@@ -825,10 +785,11 @@ def _convert_media(
     concurrency: int | None = None,
     renderer: str | None = None,
     transparent: bool = True,
-) -> tuple[dict[str, str], dict[str, bytes], list[dict]]:
+) -> tuple[dict[str, str], dict[str, bytes], list[dict], list[dict]]:
     replacements: dict[str, str] = {}
     generated: dict[str, bytes] = {}
     converted: list[dict] = []
+    skipped: list[dict] = []
     allocated = set(existing_names)
 
     items_to_render: list[tuple[int, str, str, zipfile.ZipInfo]] = []
@@ -836,9 +797,9 @@ def _convert_media(
 
     for idx, info in enumerate(media_infos):
         source_name = info.filename
-        output_name = _unique_png_name(source_name, allocated)
-        allocated.add(output_name)
         if source_name in reference_previews:
+            output_name = _unique_png_name(source_name, allocated)
+            allocated.add(output_name)
             png = reference_previews[source_name]
             replacements[source_name] = output_name
             generated[output_name] = png
@@ -846,10 +807,20 @@ def _convert_media(
                               "bytes": len(png), "method": "reference-png"})
             continue
 
+        ext = posixpath.splitext(source_name)[1].lower()
+        if ext != ".emf":
+            skipped.append({
+                "path": source_name,
+                "reason": f"unsupported {ext.upper().lstrip('.')} format (legacy 16-bit metafile is not auto-converted; supply --preview to replace)",
+            })
+            continue
+
+        output_name = _unique_png_name(source_name, allocated)
+        allocated.add(output_name)
         items_to_render.append((idx, source_name, output_name, info))
 
     if not items_to_render:
-        return replacements, generated, converted
+        return replacements, generated, converted, skipped
 
     max_workers = concurrency if concurrency is not None else min(os.cpu_count() or 4, 8)
 
@@ -913,7 +884,7 @@ def _convert_media(
                 generated[output_name] = png
                 converted.append(entry)
 
-    return replacements, generated, converted
+    return replacements, generated, converted, skipped
 
 
 def repair(
@@ -924,25 +895,17 @@ def repair(
     reference_previews: dict[str, os.PathLike[str] | str] | None = None,
     concurrency: int | None = None,
     transparent: bool = True,
-    *,
-    inkscape: str | None = None,
 ) -> dict:
-    """Convert package EMF/WMF media to PNG and write a new PPTX atomically.
+    """Convert package EMF media to PNG and write a new PPTX atomically.
 
     The source and output must be different, and output must not already
-    exist.  All EMF/WMF members are converted with resvg or Inkscape; relationship
+    exist. EMF members are converted with resvg; relationship
     targets are updated to collision-safe PNG members while original media,
-    OLE binaries, and unrelated ZIP member payloads are retained.  A failed
+    OLE binaries, and unrelated ZIP member payloads are retained. A failed
     conversion or invalid output leaves no output file behind.
     ``reference_previews`` maps exact EMF/WMF package paths to trusted PNG
     exports, which are embedded byte-for-byte without resizing or rendering.
-    ``inkscape`` is a legacy keyword alias for ``renderer``; pass only one.
     """
-    if inkscape is not None:
-        if renderer is not None:
-            raise TypeError("specify only one of renderer and the legacy inkscape argument")
-        renderer = inkscape
-
     source_path = _path_string(source)
     output_path = _path_string(output)
     source_real = os.path.realpath(source_path)
@@ -985,7 +948,7 @@ def repair(
                 raise RepairError(f"Invalid reference PNG: {reference_path}")
             reference_bytes[member] = png
         with tempfile.TemporaryDirectory(prefix="slidebridge-", dir=parent) as temporary_dir:
-            replacements, generated, converted = _convert_media(
+            replacements, generated, converted, skipped = _convert_media(
                 archive,
                 media_infos,
                 all_names,
@@ -1057,12 +1020,15 @@ def repair(
                 os.unlink(published_temp)
             except OSError:
                 pass
-            return {
+            result = {
                 "source": source_path,
                 "output": output_path,
                 "converted": converted,
                 "updated_relationships": changed_relationships,
             }
+            if skipped:
+                result["skipped"] = skipped
+            return result
     except SlideBridgeError:
         if not archive.fp is None:
             archive.close()

@@ -20,24 +20,21 @@ Finder 右鍵快速動作已移除：Automator 沙箱會擋下 shell 呼叫，�
 
 ### 3. 指令列
 
-需要 Python 3.10+；修復推薦安裝純命令列渲染器 [resvg](https://github.com/linebender/resvg)（無 GUI、背景靜音、速度快 5~10 倍且原生支援透明背景）。亦支援傳統 [Inkscape](https://inkscape.org/release/) 作為相容後備。EMF 建議加裝 libemf2svg（先轉 SVG 再交給 resvg/Inkscape 渲染）。專案內已修補的 `bin/emf2svg-conv` 會被優先採用。
+需要 Python 3.10+；修復採用純命令列渲染器 [resvg](https://github.com/linebender/resvg)（無 GUI、背景靜音、速度快 5~10 倍且原生支援透明背景）。EMF 圖形先經由專案內建的修補版 `bin/emf2svg-conv`（基於 libemf2svg）轉為 SVG，再交由 resvg 渲染為高解析度 PNG。
 
 ```sh
-brew install resvg           # 推薦：純 CLI 靜音渲染器
-brew install libemf2svg
-# 或安裝 Inkscape 作為後備：
-# brew install --cask inkscape
+brew install resvg           # 必要依賴：純 CLI 靜音渲染器
 
 python3 -m slidebridge scan input.pptx --json
-python3 -m slidebridge fix input.pptx                      # 預設輸出 input_fixed.pptx，自動選用 resvg
+python3 -m slidebridge fix input.pptx                      # 預設輸出 input_fixed.pptx，自動調用 resvg
 python3 -m slidebridge fix input.pptx -o out.pptx --dpi 600
-python3 -m slidebridge fix input.pptx --renderer /path/to/resvg  # 指定自訂渲染器（支援 resvg 或 inkscape）
+python3 -m slidebridge fix input.pptx --renderer /path/to/resvg  # 指定自訂 resvg 執行檔路徑
 python3 -m slidebridge doctor                              # 環境預檢
 ```
 
 `python3 -m pip install -e .` 後可改用 `slidebridge` 指令。
 
-`--renderer resvg` 仍需 Inkscape 處理 WMF，或未能先轉成 SVG 的 EMF。`--no-transparent` 會略過白色邊界去背，也不要求 Inkscape 使用透明背景；它不會把 renderer 原本輸出的透明區域填成白色。
+WMF 為 16 位元過時格式，SlideBridge 預設略過自動轉換以避免破圖（原樣保留在簡報封裝內）；若有舊 WMF 圖片，建議在 Windows 端存為 EMF，或透過 `--preview` 指定正確的 PNG。`--no-transparent` 會略過白色邊界去背；它不會把 renderer 原本輸出的透明區域填成白色。
 
 ## 修復流程與限制
 
@@ -95,15 +92,15 @@ Windows 端需 `origin-bridge.exe`（交叉編譯：`bash scripts/build_origin_b
 ## 驗證狀態
 
 - 已用真實 Origin95.Graph 簡報完成 EMF 轉換與 package 完整性驗證（第 4／5 頁共 5 個 OLE 位置、4 份嵌入資料）；修復檔在 Mac PowerPoint 正常顯示，Windows Origin 雙擊編輯成功。
-- Inkscape 1.4.4 ARM 原生 EMF 匯入全部崩潰；libemf2svg 中介路徑可完成轉換。線寬、旋轉文字（軸標題、上下標）與 XPS 擬合的 XOR 網底已在 `patches/` 修正並編入 `bin/emf2svg-conv`。
+- Inkscape 1.4.4 ARM 原生 EMF 匯入全部崩潰，專案已完全廢除 Inkscape 相依，改採純 CLI 的 `libemf2svg` + `resvg` 高速管線。線寬、旋轉文字（軸標題、上下標）與 XPS 擬合的 XOR 網底已在 `patches/` 修正並編入 `bin/emf2svg-conv`。
 - 保留 OLE bytes 不等於 Office 會接受所有變體；輸出仍需在 Mac PowerPoint 檢視，並在 Windows + Origin 驗證編輯流程。數位簽章修改後不再有效。
-- **尚未開始**：PowerPoint Add-in。核心目前依賴本機 Inkscape，移植到 Office WebView 需要轉換服務或 WASM 後端。
+- **尚未開始**：PowerPoint Add-in。核心目前依賴本機 resvg，移植到 Office WebView 需要轉換服務或 WASM 後端。
 
-測試：177 項 Python 單元測試（含 14 項原生 EMF 渲染測試），另有 4 項 C++ 持久化測試。
+測試：176 項 Python 單元測試（含 14 項原生 EMF 渲染測試），另有 4 項 C++ 持久化測試。
 
 ```sh
-python3 -m unittest discover -s tests -v                                        # 177 項，其中 14 項原生 EMF skip
-SLIDEBRIDGE_TEST_EMF2SVG=bin/emf2svg-conv python3 -m unittest discover -s tests -v   # 177 項全跑
+python3 -m unittest discover -s tests -v                                        # 176 項，其中 14 項原生 EMF skip
+SLIDEBRIDGE_TEST_EMF2SVG=bin/emf2svg-conv python3 -m unittest discover -s tests -v   # 176 項全跑
 python3 scripts/verify_package.py input.pptx input_fixed.pptx                   # 真實樣本完整性比對
 ```
 
@@ -122,5 +119,5 @@ python3 -m slidebridge fix input.pptx -o windows-previews.pptx \
 ## 參考
 
 - [Microsoft OleObject 結構](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.presentation.oleobject)
-- [Inkscape CLI](https://wiki.inkscape.org/wiki/Using_the_Command_Line)
+- [resvg](https://github.com/linebender/resvg)
 - [libemf2svg](https://github.com/kakwa/libemf2svg)

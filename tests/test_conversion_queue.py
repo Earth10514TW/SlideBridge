@@ -56,7 +56,7 @@ class ConversionQueueTests(unittest.TestCase):
         reference = infos[3].filename
         existing = {info.filename for info in infos} | {"ppt/media/image0.png"}
         with patch("slidebridge.core._convert_single_item", side_effect=convert):
-            replacements, generated, converted = _convert_media(
+            replacements, generated, converted, skipped = _convert_media(
                 Archive(), infos, existing, 300, "unused", {reference: b"reference"},
                 concurrency=2,
             )

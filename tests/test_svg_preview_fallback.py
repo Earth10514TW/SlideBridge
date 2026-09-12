@@ -24,9 +24,9 @@ class SvgPreviewFallbackTests(unittest.TestCase):
         (self.session / "edited.bin").write_bytes(cfb_payload(1))
         (self.session / "preview.svg").write_text("<svg/>")
 
-    def _run(self, run_side_effect, *, executables=("/mock/resvg", "/mock/inkscape"), **kwargs):
+    def _run(self, run_side_effect, *, executable="/mock/resvg", **kwargs):
         def locate(name, **_kwargs):
-            return executables[0] if name == "resvg" else executables[1]
+            return executable if name == "resvg" else None
 
         with patch("slidebridge.bridge.find_executable", side_effect=locate, create=True), patch(
             "slidebridge.bridge.subprocess.run", side_effect=run_side_effect
@@ -34,7 +34,7 @@ class SvgPreviewFallbackTests(unittest.TestCase):
             report = writeback_ole(self.source, self.session, self.output, **kwargs)
         return report, run
 
-    def test_resvg_success_skips_inkscape(self):
+    def test_resvg_success(self):
         def render(command, **_kwargs):
             Path(command[2]).write_bytes(minimal_png(20, 20, b"resvg"))
 
@@ -45,51 +45,54 @@ class SvgPreviewFallbackTests(unittest.TestCase):
         self.assertIn("resvg", run.call_args.args[0][0])
         self.assertTrue((self.session / "preview_from_svg.png").is_file())
 
-    def test_resvg_invalid_output_falls_back_to_inkscape(self):
+    def test_resvg_invalid_output_falls_back_to_manual_preview(self):
+        manual = minimal_png(30, 30, b"manual")
+        (self.session / "preview.png").write_bytes(manual)
+
         def render(command, **_kwargs):
-            if "resvg" in command[0]:
-                Path(command[2]).write_bytes(b"not a png")
-            else:
-                Path(command[2].split("=", 1)[1]).write_bytes(minimal_png(30, 30, b"inkscape"))
+            Path(command[2]).write_bytes(b"not a png")
 
         report, run = self._run(render)
 
-        self.assertEqual(report["preview_source"], str(self.session / "preview_from_svg.png"))
-        self.assertEqual(run.call_count, 2)
-        self.assertIn("inkscape", run.call_args.args[0][0])
+        self.assertEqual(report["preview_source"], str(self.session / "preview.png"))
+        self.assertEqual(run.call_count, 1)
         self.assertEqual(list(self.session.glob(".slidebridge-svg-*.png")), [])
 
-    def test_resvg_nonzero_exit_falls_back_to_inkscape(self):
+    def test_resvg_nonzero_exit_falls_back_to_manual_preview(self):
+        manual = minimal_png(30, 30, b"manual")
+        (self.session / "preview.png").write_bytes(manual)
+
         def render(command, **_kwargs):
-            if "resvg" in command[0]:
-                return SimpleNamespace(returncode=1)
-            Path(command[2].split("=", 1)[1]).write_bytes(minimal_png(30, 30, b"inkscape"))
+            return SimpleNamespace(returncode=1)
 
         report, run = self._run(render)
 
-        self.assertEqual(report["preview_source"], str(self.session / "preview_from_svg.png"))
-        self.assertEqual(run.call_count, 2)
+        self.assertEqual(report["preview_source"], str(self.session / "preview.png"))
+        self.assertEqual(run.call_count, 1)
 
-    def test_resvg_missing_output_falls_back_to_inkscape(self):
+    def test_resvg_missing_output_falls_back_to_manual_preview(self):
+        manual = minimal_png(30, 30, b"manual")
+        (self.session / "preview.png").write_bytes(manual)
+
         def render(command, **_kwargs):
-            if "inkscape" in command[0]:
-                Path(command[2].split("=", 1)[1]).write_bytes(minimal_png(30, 30, b"inkscape"))
+            return SimpleNamespace(returncode=0)
 
         report, run = self._run(render)
 
-        self.assertEqual(report["preview_source"], str(self.session / "preview_from_svg.png"))
-        self.assertEqual(run.call_count, 2)
+        self.assertEqual(report["preview_source"], str(self.session / "preview.png"))
+        self.assertEqual(run.call_count, 1)
 
-    def test_resvg_failure_falls_back_to_inkscape(self):
+    def test_resvg_failure_falls_back_to_manual_preview(self):
+        manual = minimal_png(30, 30, b"manual")
+        (self.session / "preview.png").write_bytes(manual)
+
         def render(command, **_kwargs):
-            if "resvg" in command[0]:
-                raise OSError("renderer unavailable")
-            Path(command[2].split("=", 1)[1]).write_bytes(minimal_png(30, 30, b"inkscape"))
+            raise OSError("renderer unavailable")
 
         report, run = self._run(render)
 
-        self.assertEqual(report["preview_source"], str(self.session / "preview_from_svg.png"))
-        self.assertEqual(run.call_count, 2)
+        self.assertEqual(report["preview_source"], str(self.session / "preview.png"))
+        self.assertEqual(run.call_count, 1)
 
     def test_failed_svg_attempt_does_not_accept_stale_output_and_uses_manual_preview(self):
         stale = minimal_png(99, 99, b"stale")
@@ -98,11 +101,9 @@ class SvgPreviewFallbackTests(unittest.TestCase):
         (self.session / "preview.png").write_bytes(manual)
 
         def render(_command, **_kwargs):
-            # A successful exit without a new image must not reuse the stale
-            # published image from the previous edit session.
             return SimpleNamespace(returncode=0)
 
-        report, run = self._run(render, executables=("/mock/resvg", None))
+        report, run = self._run(render)
 
         self.assertEqual(report["preview_source"], str(self.session / "preview.png"))
         self.assertEqual(run.call_count, 1)
@@ -112,7 +113,7 @@ class SvgPreviewFallbackTests(unittest.TestCase):
         manual = minimal_png(40, 40, b"manual")
         (self.session / "preview.png").write_bytes(manual)
 
-        report, run = self._run(lambda *_args, **_kwargs: None, executables=(None, None))
+        report, run = self._run(lambda *_args, **_kwargs: None, executable=None)
 
         self.assertEqual(report["preview_source"], str(self.session / "preview.png"))
         run.assert_not_called()
@@ -132,7 +133,7 @@ class SvgPreviewFallbackTests(unittest.TestCase):
             raise OSError("renderer unavailable")
 
         with self.assertRaises(SlideBridgeError) as ctx:
-            self._run(render, executables=("/mock/resvg", None))
+            self._run(render)
         self.assertIn("paired writeback requires a preview image", str(ctx.exception).lower())
         self.assertFalse((self.session / "preview_from_svg.png").exists())
         self.assertEqual(list(self.session.glob(".slidebridge-svg-*.png")), [])

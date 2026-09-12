@@ -9,16 +9,9 @@ from .core import SlideBridgeError, repair, scan
 from .bridge import prepare_ole, writeback_ole, list_ole_objects, edit_presentation
 from .locate import ensure_login_path, find_executable
 
-#: Install locations for Inkscape, tried when it is not on PATH. Needed because
+#: Install locations for resvg, tried when it is not on PATH. Needed because
 #: GUI-launched runs (PowerPoint Services menu, double-clicked .app) do not
 #: inherit Homebrew's PATH.
-_INKSCAPE_CANDIDATES = (
-    "/Applications/Inkscape.app/Contents/MacOS/inkscape",
-    "/opt/homebrew/bin/inkscape",
-    "/usr/local/bin/inkscape",
-    "/opt/local/bin/inkscape",
-)
-
 _RESVG_CANDIDATES = (
     "/opt/homebrew/bin/resvg",
     "/usr/local/bin/resvg",
@@ -30,12 +23,8 @@ def find_resvg():
     return find_executable("resvg", absolute_candidates=_RESVG_CANDIDATES)
 
 
-def find_inkscape():
-    return find_executable("inkscape", absolute_candidates=_INKSCAPE_CANDIDATES) or "inkscape"
-
-
 def find_svg_renderer():
-    return find_resvg() or find_inkscape()
+    return find_resvg()
 
 
 def main(argv=None):
@@ -127,7 +116,7 @@ def main(argv=None):
         dest="concurrency",
         help="Number of concurrent conversion workers (default: min(cpu_count, 8))",
     )
-    fix.add_argument("--renderer", default=None, help="Path to SVG renderer executable (default: auto-detected resvg or inkscape)")
+    fix.add_argument("--renderer", default=None, help="Path to resvg executable (default: auto-detected resvg)")
     fix.add_argument("--transparent", dest="transparent", action="store_true", default=True, help="Force transparent background for chart boundaries (default: true)")
     fix.add_argument("--no-transparent", dest="transparent", action="store_false", help="Do not force transparent background")
     fix.add_argument("--json", action="store_true")
@@ -220,6 +209,9 @@ def main(argv=None):
             print("Scan identifies candidate formats; it does not verify visual fidelity.")
         else:
             print(f"Saved: {output}\nConverted assets: {len(report['converted'])}")
+            if report.get("skipped"):
+                for item in report["skipped"]:
+                    print(f"  [Notice] Skipped {item['path']}: {item['reason']}")
         return 0
     except (SlideBridgeError, OSError, ValueError) as exc:
         print(f"SlideBridge: {exc}", file=sys.stderr)

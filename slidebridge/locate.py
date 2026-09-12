@@ -7,7 +7,7 @@ item, a double-clicked ``.app``) inherit launchd's minimal environment.
 That PATH is typically ``/usr/bin:/bin:/usr/sbin:/sbin`` and does **not**
 include ``/usr/local/bin`` or ``/opt/homebrew/bin``, so ``shutil.which``
 fails to find tools that work perfectly in a terminal -- even though
-``prlctl`` or ``inkscape`` are installed.
+``prlctl`` or ``resvg`` are installed.
 
 ``login_path_dirs`` reconstructs the directories a login shell would have,
 the same way ``/usr/libexec/path_helper`` does: read ``/etc/paths``, then

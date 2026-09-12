@@ -107,13 +107,14 @@ clang++ -std=c++17 -Wall -Wextra native/origin-bridge/save_sequence_test.cpp -o 
   - 避免舊版或無 `SI` 註冊環境下 `CoCreateInstance` 誤開空白 Origin 視窗的問題。
 - **測試覆蓋**：新增 `test_custom_clsid_is_passed_to_helper` 等測試，148 項 Python 單元測試全綠通過。
 
-## 純 CLI 渲染器 resvg 整合（2026-09-12 已完成）
+## 純 CLI 渲染器 resvg 整合與 Inkscape 完全廢除（2026-09-12 已完成）
 
-- 核心渲染管線正式整合純命令列工具 **`resvg`**（Rust 開發）：
-  - 自動偵測系統 `resvg`，取代原本會喚醒 macOS GUI Dock 圖示彈跳的 Inkscape。
+- 核心渲染管線全面定錨於純命令列工具 **`resvg`**（Rust 開發）：
+  - 自動偵測系統 `resvg`，徹底廢除所有 Inkscape 相依、候選路徑與 fallback 分支，消除 macOS GUI Dock 圖示彈跳與 ARM64 崩潰風險。
   - 原生支援 RGBA 透明背景，並透過 `png_white_to_transparent` 消除外部白邊。
-  - 支援 `--renderer`（可指定 resvg 或 inkscape 自訂路徑）、`--transparent`、`--no-transparent`，已移除舊版 `--inkscape` 參數。
-  - 160 項單元測試全數通過。
+  - 支援 `--renderer`（可指定 resvg 自訂路徑）、`--transparent`、`--no-transparent`，已徹底移除舊版 `--inkscape` 參數與函式參數。
+  - **WMF 處理原則**：WMF 屬微軟早期 16 位元過時格式，自動修復時安全略過（原樣保留於 package 內不毀損），並在報表與 CLI 中提示；若使用者有正確圖表，仍支援透過 `--preview` 置換為 reference PNG。
+  - 176 項單元測試全數通過。
 
 ## 待辦
 
