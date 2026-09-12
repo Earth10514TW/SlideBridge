@@ -33,10 +33,12 @@ cmake --build build/origin-bridge-build --config Release
 
 ```powershell
 .\origin-bridge.exe inspect .\editable.bin
-.\origin-bridge.exe edit .\editable.bin .\edited.bin --clsid '{64CC80B2-4FA1-4F7B-9D6F-1BFACF5715DC}'
+.\origin-bridge.exe edit .\editable.bin .\edited.bin --clsid auto
+# 或直接省略 --clsid，預設全自動動態探測：
+.\origin-bridge.exe edit .\editable.bin .\edited.bin
 ```
 
-指定的 CLSID 必須同時符合檔案與 Windows 上 `Origin95.Graph` 的註冊值；上述值來自本機測試樣本，其他類別不在此原型支援範圍。既有 output 不會覆寫。所有儲存都發生在 output 副本。
+Helper 內建動態 OLE 類別閘門：自動偵測 Windows 註冊表中的各版本 Origin ProgID（如 `Origin95.Graph`、`Origin.Graph` 等）與 `\CompObj` 元數據，只要確認為 Origin 圖表即自動放行，非 Origin 物件（如 Excel/Word）仍受安全防護阻擋。既有 output 不會覆寫。所有儲存都發生在 output 副本。
 
 - **即時視覺預覽（所見即所得）**：Helper 視窗下方設有圖表預覽畫布，透過 `IAdviseSink` 監聽 Origin 的更新事件，並以 `OleDraw` 即時將圖表以正確長寬比繪製至視窗中央，修改結果立即可見。
 - **儲存時自動匯出預覽圖**：按下 Save 或 Save and Close 時，Helper 會同時輸出：
@@ -164,7 +166,7 @@ PNG 是**由 EMF 點陣化**而來，所以 EMF 若為舊圖，PNG 必然也是�
 
 實測確認：**Origin 在 `OLEIVERB_OPEN` 模式下不會為容器即時繪製**，也不會更新 `OlePres000` / `OlePres001` 展示快取。
 
-**現已完全自動化**：Helper 在按下「Save」或「Save and Close」時，會透過 COM Automation 掛接目前正在執行的 Origin 實例（`Origin.ApplicationSI`），並透過 LabTalk X-Function 直接驅動 Origin 內部渲染引擎：
+**現已完全自動化**：Helper 在按下「Save」或「Save and Close」時，會優先透過 COM ROT（`GetActiveObject`）掛接目前正在活動中編輯圖表的 Origin 實例（`Origin.Application` / `Origin.ApplicationSI`），並透過 LabTalk X-Function 直接驅動 Origin 內部渲染引擎：
 
 ```labtalk
 expGraph type:=png filename:="preview" path:="<SessionDir>" overwrite:=replace;

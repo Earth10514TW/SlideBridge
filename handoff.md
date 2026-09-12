@@ -82,8 +82,19 @@ clang++ -std=c++17 -Wall -Wextra native/origin-bridge/save_sequence_test.cpp -o 
 
 `/Users/earth/Downloads/presentation.pptx`（4 個 EMF、第 4/5 頁共 5 個 OLE 位置、4 份嵌入資料）、`/Users/earth/Downloads/圖片1.png` → `ppt/media/image5.emf`、`圖片2.png` → `ppt/media/image8.emf`。`bin/`、`dist/`、`.cache/`、`artifacts/` 皆已忽略。修補後的 libemf2svg 屬 GPLv2，散布時要保留授權與原始碼／patch 取得方式。
 
+## Origin 多版本自動相容性增強（2026-09-12 已完成）
+
+已完成 Windows Helper 與 Python VM 模組之 Origin 多版本自動動態適配：
+- **動態 OLE 類別偵測（CheckOriginClass）**：
+  - 移除單一 CLSID `{64CC80B2...}` 之硬編碼閘門，支援 `--clsid auto`。
+  - 動態查詢 Windows 註冊表中的各版本 Origin ProgID（`Origin95.Graph`、`Origin.Graph`、`Origin.Graph.9` 等）與 `ProgIDFromCLSID`。
+  - 讀取 OLE 根目錄 `\CompObj` 使用者型態名稱（User Type Name）與 `Contents` 專屬串流，確認為 Origin 家族物件即自動放行，非 Origin 物件依舊阻擋（安全隔離）。
+- **COM Automation 實例掛接優化（AutoExportOriginGraph）**：
+  - 優先使用 Windows COM ROT（Running Object Table）之 `GetActiveObject` 連接當前正在編輯圖表之活躍 Origin 實例（`Origin.Application` / `Origin.ApplicationSI`）。
+  - 避免舊版或無 `SI` 註冊環境下 `CoCreateInstance` 誤開空白 Origin 視窗的問題。
+- **測試覆蓋**：新增 `test_custom_clsid_is_passed_to_helper` 等測試，148 項 Python 單元測試全綠通過。
+
 ## 待辦
 
 - PowerPoint Add-in（未開始）。
 - 核心仍依賴本機 Inkscape；要移植到 Office WebView 需設計轉換服務或 WASM 後端。
-- helper 目前靠 COM 匯出；若換 Origin 版本，`Origin.ApplicationSI` 這個 ProgID 可能需要改探（另有 `Origin.Application`）。

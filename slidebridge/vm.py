@@ -386,7 +386,7 @@ def launch_vm_helper(
     guest: Guest | str,
     session_dir: os.PathLike[str] | str,
     helper_exe: os.PathLike[str] | str | None = None,
-    clsid: str = _DEFAULT_CLSID,
+    clsid: str = "auto",
     prlctl_bin: str = "prlctl",
     backend: str | None = None,
 ) -> int:

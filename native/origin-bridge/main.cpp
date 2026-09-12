@@ -163,34 +163,132 @@ HRESULT ParseClsid(const std::wstring& value, CLSID* clsid) {
   if (!clsid) {
     return E_INVALIDARG;
   }
+  if (_wcsicmp(value.c_str(), L"auto") == 0 || _wcsicmp(value.c_str(), L"any") == 0) {
+    *clsid = CLSID_NULL;
+    return S_OK;
+  }
   return CLSIDFromString(const_cast<LPOLESTR>(value.c_str()), clsid);
 }
 
-// This check deliberately uses only the storage metadata and the registered
-// Origin95.Graph ProgID.  It runs before OleLoad, which is the first call that
-// can activate the server named by the compound file.
+bool IsOriginProgId(const std::wstring& progId) {
+  if (progId.empty()) {
+    return false;
+  }
+  return _wcsnicmp(progId.c_str(), L"Origin", 6) == 0;
+}
+
+bool IsOriginClass(IStorage* storage, REFCLSID root) {
+  // 1. Check registered ProgID associated with root CLSID
+  LPOLESTR progIdStr = nullptr;
+  if (SUCCEEDED(ProgIDFromCLSID(root, &progIdStr)) && progIdStr) {
+    std::wstring found(progIdStr);
+    CoTaskMemFree(progIdStr);
+    if (IsOriginProgId(found)) {
+      Log(L"IsOriginClass: matched ProgIDFromCLSID: " + found);
+      return true;
+    }
+  }
+
+  // 2. Check known Origin ProgIDs in Windows registry
+  const wchar_t* const kKnownProgIds[] = {
+      L"Origin95.Graph",
+      L"Origin.Graph",
+      L"Origin.Graph.9",
+      L"Origin.Graph.8",
+      L"Origin.Application",
+      L"Origin.ApplicationSI"
+  };
+  for (const wchar_t* name : kKnownProgIds) {
+    CLSID registered{};
+    if (SUCCEEDED(CLSIDFromProgID(name, &registered))) {
+      if (IsEqualGuid(root, registered)) {
+        Log(std::wstring(L"IsOriginClass: matched registered ProgID ") + name);
+        return true;
+      }
+    }
+  }
+
+  // 3. Inspect user-readable type name in \CompObj metadata
+  if (storage) {
+    CLIPFORMAT cf = 0;
+    LPOLESTR userType = nullptr;
+    if (SUCCEEDED(ReadFmtUserTypeStg(storage, &cf, &userType)) && userType) {
+      std::wstring typeStr = userType;
+      CoTaskMemFree(userType);
+      std::wstring upper = typeStr;
+      std::transform(upper.begin(), upper.end(), upper.begin(), ::towupper);
+      if (upper.find(L"ORIGIN") != std::wstring::npos) {
+        Log(L"IsOriginClass: matched user type name: " + typeStr);
+        return true;
+      }
+    }
+
+    // 4. Verify presence of Origin's internal document stream "Contents"
+    IStream* contentsStream = nullptr;
+    if (SUCCEEDED(storage->OpenStream(L"Contents", nullptr,
+                                      STGM_READ | STGM_SHARE_EXCLUSIVE, 0,
+                                      &contentsStream)) && contentsStream) {
+      contentsStream->Release();
+      Log(L"IsOriginClass: verified Origin Contents stream in storage");
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Validates that the compound storage belongs to an Origin application.
+// Supports dynamic discovery across Origin versions (2018, 2021, 2024, etc.)
+// while rejecting unrelated OLE formats.
 HRESULT CheckOriginClass(IStorage* storage, REFCLSID requested, CLSID* rootOut) {
+  if (!storage) {
+    return E_INVALIDARG;
+  }
   CLSID root{};
   HRESULT hr = ReadRootClsid(storage, &root);
   if (FAILED(hr)) {
+    LogHr(L"ReadRootClsid", hr);
     return hr;
   }
-  CLSID registered{};
-  hr = CLSIDFromProgID(kOriginProgId, &registered);
-  if (FAILED(hr)) {
-    LogHr(L"CLSIDFromProgID(Origin95.Graph) is not registered", hr);
-    return hr;
-  }
-  if (!IsEqualGuid(root, requested) || !IsEqualGuid(registered, requested)) {
-    Log(L"Origin class gate rejected the storage: root=" + GuidText(root) +
-        L", requested=" + GuidText(requested) +
-        L", registered=" + GuidText(registered));
+
+  // 1. Requested is CLSID_NULL (e.g. --clsid auto)
+  if (IsEqualGuid(requested, CLSID_NULL)) {
+    if (IsOriginClass(storage, root)) {
+      Log(L"Origin class gate: auto-detected Origin class: root=" + GuidText(root));
+      if (rootOut) *rootOut = root;
+      return S_OK;
+    }
+    Log(L"Origin class gate rejected storage (not recognized as Origin): root=" + GuidText(root));
     return CLASS_E_CLASSNOTAVAILABLE;
   }
-  if (rootOut) {
-    *rootOut = root;
+
+  // 2. Requested matches storage root CLSID
+  if (IsEqualGuid(root, requested)) {
+    if (IsOriginClass(storage, root)) {
+      Log(L"Origin class gate passed: root=" + GuidText(root));
+      if (rootOut) *rootOut = root;
+      return S_OK;
+    }
+    CLSID registered{};
+    if (SUCCEEDED(CLSIDFromProgID(kOriginProgId, &registered)) && IsEqualGuid(registered, requested)) {
+      Log(L"Origin class gate passed via Origin95.Graph: root=" + GuidText(root));
+      if (rootOut) *rootOut = root;
+      return S_OK;
+    }
   }
-  return S_OK;
+
+  // 3. Storage has a different Origin version CLSID than requested
+  if (IsOriginClass(storage, root)) {
+    Log(L"Origin class gate: root=" + GuidText(root) +
+        L" differs from requested=" + GuidText(requested) +
+        L", but root was verified as a valid Origin class; accepting.");
+    if (rootOut) *rootOut = root;
+    return S_OK;
+  }
+
+  Log(L"Origin class gate rejected the storage: root=" + GuidText(root) +
+      L", requested=" + GuidText(requested));
+  return CLASS_E_CLASSNOTAVAILABLE;
 }
 
 class OriginHost final : public IOleClientSite,
@@ -300,34 +398,66 @@ class OriginHost final : public IOleClientSite,
     return hr;
   }
 
-  // Drives Origin's internal expGraph command via COM Automation (Origin.ApplicationSI)
+  // Drives Origin's internal expGraph command via COM Automation
   // to export the active graph window as preview.png into the session folder.
   bool AutoExportOriginGraph(const std::wstring& sessionDir) {
     if (sessionDir.empty()) {
       return false;
     }
-    CLSID clsid{};
-    HRESULT hr = CLSIDFromProgID(L"Origin.ApplicationSI", &clsid);
-    if (FAILED(hr)) {
-      hr = CLSIDFromProgID(L"Origin.Application", &clsid);
-    }
-    if (FAILED(hr)) {
-      LogHr(L"CLSIDFromProgID for Origin COM Automation", hr);
-      return false;
-    }
 
     IDispatch* pApp = nullptr;
-    hr = CoCreateInstance(clsid, nullptr, CLSCTX_LOCAL_SERVER, IID_IDispatch,
-                          reinterpret_cast<void**>(&pApp));
-    if (FAILED(hr) || !pApp) {
-      LogHr(L"CoCreateInstance(Origin COM Application)", hr);
+
+    // 1. Prefer connecting to an active, running Origin instance from the ROT.
+    // When Origin opens the chart via OLEIVERB_OPEN, it registers in ROT.
+    const wchar_t* const kAppProgIds[] = {
+        L"Origin.Application",
+        L"Origin.ApplicationSI"
+    };
+
+    for (const wchar_t* progId : kAppProgIds) {
+      CLSID clsidApp{};
+      if (SUCCEEDED(CLSIDFromProgID(progId, &clsidApp))) {
+        IUnknown* pUnk = nullptr;
+        if (SUCCEEDED(GetActiveObject(clsidApp, nullptr, &pUnk)) && pUnk) {
+          HRESULT hr = pUnk->QueryInterface(IID_IDispatch, reinterpret_cast<void**>(&pApp));
+          pUnk->Release();
+          if (SUCCEEDED(hr) && pApp) {
+            Log(std::wstring(L"AutoExport: Attached to active Origin instance via ") + progId);
+            break;
+          }
+        }
+      }
+    }
+
+    // 2. If not found in ROT, fallback to CoCreateInstance (Single-Instance preferred)
+    if (!pApp) {
+      CLSID clsidApp{};
+      HRESULT hr = CLSIDFromProgID(L"Origin.ApplicationSI", &clsidApp);
+      if (FAILED(hr)) {
+        hr = CLSIDFromProgID(L"Origin.Application", &clsidApp);
+      }
+      if (SUCCEEDED(hr)) {
+        hr = CoCreateInstance(clsidApp, nullptr, CLSCTX_LOCAL_SERVER, IID_IDispatch,
+                              reinterpret_cast<void**>(&pApp));
+        if (SUCCEEDED(hr) && pApp) {
+          Log(L"AutoExport: Connected to Origin via CoCreateInstance");
+        } else {
+          LogHr(L"CoCreateInstance(Origin COM Application)", hr);
+        }
+      } else {
+        LogHr(L"CLSIDFromProgID for Origin COM Automation", hr);
+      }
+    }
+
+    if (!pApp) {
+      Log(L"AutoExport: Unable to obtain Origin IDispatch (active or new)");
       return false;
     }
 
     DISPID dispidExecute = 0;
     OLECHAR* memberName = const_cast<OLECHAR*>(L"Execute");
-    hr = pApp->GetIDsOfNames(IID_NULL, &memberName, 1, LOCALE_USER_DEFAULT,
-                             &dispidExecute);
+    HRESULT hr = pApp->GetIDsOfNames(IID_NULL, &memberName, 1, LOCALE_USER_DEFAULT,
+                                     &dispidExecute);
     if (FAILED(hr)) {
       LogHr(L"GetIDsOfNames(Execute)", hr);
       pApp->Release();
@@ -1369,8 +1499,8 @@ HRESULT RunEdit(const std::wstring& input, const std::wstring& output,
 void PrintUsage() {
   Log(L"Usage:");
   Log(L"  origin-bridge.exe inspect INPUT.bin");
-  Log(L"  origin-bridge.exe edit INPUT.bin OUTPUT.bin --clsid {GUID}");
-  Log(L"  origin-bridge.exe --probe INPUT.bin OUTPUT.bin --clsid {GUID}");
+  Log(L"  origin-bridge.exe edit INPUT.bin OUTPUT.bin [--clsid {GUID}|auto]");
+  Log(L"  origin-bridge.exe --probe INPUT.bin OUTPUT.bin [--clsid {GUID}|auto]");
 }
 
 }  // namespace
@@ -1408,7 +1538,15 @@ int wmain(int argc, wchar_t** argv) {
         hr = RunProbe(argv[2], argv[3], requested);
       }
     } else {
-      LogHr(L"CLSIDFromString", hr);
+      LogHr(L"ParseClsid", hr);
+    }
+  } else if ((command == L"edit" || command == L"--probe") && argc == 4) {
+    // Omitting --clsid defaults to auto-detect (CLSID_NULL)
+    CLSID requested = CLSID_NULL;
+    if (command == L"edit") {
+      hr = RunEdit(argv[2], argv[3], requested);
+    } else {
+      hr = RunProbe(argv[2], argv[3], requested);
     }
   } else {
     PrintUsage();

@@ -259,7 +259,32 @@ class LaunchVmHelperTests(unittest.TestCase):
         self.assertEqual(argv[4], expected_helper)
         self.assertEqual(argv[5], "edit")
         self.assertEqual(argv[6], expected_editable)
+        self.assertEqual(argv[8:], ["--clsid", "auto"])
         self.assertTrue(argv[4].startswith("\\\\Mac\\Home\\"))
+
+    @patch("subprocess.run")
+    @patch("slidebridge.vm.find_executable")
+    def test_custom_clsid_is_passed_to_helper(self, mock_find, mock_run):
+        mock_find.side_effect = only({"prlctl": "/usr/local/bin/prlctl"})
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with fake_home() as home:
+            session = home / "session"
+            session.mkdir()
+            (session / "editable.bin").write_bytes(b"ole")
+            helper = session / "origin-bridge.exe"
+            helper.write_bytes(b"MZ")
+
+            launch_vm_helper(
+                Guest("parallels", "Windows 11 Lite"),
+                session,
+                helper_exe=helper,
+                clsid="{64CC80B2-4FA1-4F7B-9D6F-1BFACF5715DC}",
+            )
+
+        argv = exec_argv(mock_run)
+        self.assertIsNotNone(argv)
+        self.assertEqual(argv[8:], ["--clsid", "{64CC80B2-4FA1-4F7B-9D6F-1BFACF5715DC}"])
 
     @patch("subprocess.run")
     @patch("slidebridge.vm.find_executable")
