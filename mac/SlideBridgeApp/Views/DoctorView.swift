@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct DoctorView: View {
-    @StateObject private var vm = DoctorViewModel()
+    @StateObject private var confirmation = IntegrationConfirmation()
+    @ObservedObject var vm: DoctorViewModel
     @EnvironmentObject private var lm: LanguageManager
 
     var body: some View {
@@ -9,13 +10,7 @@ struct DoctorView: View {
             VStack(alignment: .leading, spacing: 20) {
                 // Header
                 HStack {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label(lm.t(.doctorTitle), systemImage: "stethoscope")
-                            .font(.title2.bold())
-                        Text(lm.t(.doctorSubtitle))
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
+                    WorkspaceHeader(title: lm.t(.doctorTitle), subtitle: lm.t(.doctorSubtitle), icon: "stethoscope")
 
                     Spacer()
 
@@ -25,10 +20,8 @@ struct DoctorView: View {
                         Label(lm.t(.refreshButton), systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(.bordered)
-                    .disabled(vm.isLoading)
+                    .disabled(vm.isLoading || vm.isInstalling || vm.isUninstalling)
                 }
-
-                Divider()
 
                 // Overall Health Banner
                 if let report = vm.doctorReport {
@@ -60,19 +53,19 @@ struct DoctorView: View {
                         .font(.headline)
 
                     HStack(spacing: 16) {
-                        Picker("", selection: $lm.currentLanguage) {
+                        Picker(lm.t(.interfaceLanguage), selection: $lm.currentLanguage) {
                             ForEach(AppLanguage.allCases) { lang in
                                 Text(lang.displayName).tag(lang)
                             }
                         }
                         .pickerStyle(.segmented)
+                    .labelsHidden()
                         .frame(maxWidth: 380)
 
                         Spacer()
                     }
                 }
-                .padding(18)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                .workspaceCard()
 
                 // Checks List
                 if vm.isLoading {
@@ -100,20 +93,21 @@ struct DoctorView: View {
                                             Text(check.name)
                                                 .font(.subheadline.bold())
                                             Text(check.detail)
+                                                .textSelection(.enabled)
                                                 .font(.caption)
                                                 .foregroundStyle(.secondary)
 
                                             if let fix = check.fix, !fix.isEmpty {
                                                 Text("\(lm.t(.suggestionPrefix))\(fix)")
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.orange)
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
                                                     .padding(.top, 2)
                                             }
                                         }
 
                                         Spacer()
                                     }
-                                    .padding(.vertical, 10)
+                                    .padding(.vertical, 14)
                                     .padding(.horizontal, 12)
 
                                     if index < report.checks.count - 1 {
@@ -151,12 +145,13 @@ struct DoctorView: View {
                             .buttonStyle(.borderedProminent)
 
                             Button(role: .destructive) {
-                                vm.uninstallIntegration()
+                                confirmation.isPresented = true
                             } label: {
                                 Label(lm.t(.uninstallButton), systemImage: "trash")
                             }
                             .buttonStyle(.bordered)
                         }
+                        .disabled(vm.isLoading)
                     }
 
                     if let msg = vm.installMessage {
@@ -166,10 +161,17 @@ struct DoctorView: View {
                             .padding(.top, 4)
                     }
                 }
-                .padding(20)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor).opacity(0.6)))
+                .workspaceCard()
             }
-            .padding(24)
+            .frame(maxWidth: 920, alignment: .leading)
+            .padding(28)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+        .alert(lm.t(.uninstallConfirmation), isPresented: $confirmation.isPresented) {
+            Button(lm.t(.uninstallButton), role: .destructive) { vm.uninstallIntegration() }
+            Button(lm.t(.cancel), role: .cancel) {}
+        } message: {
+            Text(lm.t(.uninstallExplanation))
         }
         .onAppear {
             if vm.doctorReport == nil {
@@ -201,5 +203,21 @@ struct DoctorView: View {
             }
         }
         .font(.title3)
+        .accessibilityLabel(statusLabel(status))
+        .help(statusLabel(status))
     }
+
+    private func statusLabel(_ status: String) -> String {
+        switch status.lowercased() {
+        case "ok": return lm.t(.statusPassed)
+        case "warn": return lm.t(.statusWarning)
+        case "fail": return lm.t(.statusFailed)
+        default: return lm.t(.statusInfo)
+        }
+    }
+}
+
+
+private final class IntegrationConfirmation: ObservableObject {
+    @Published var isPresented = false
 }

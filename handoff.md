@@ -2,6 +2,29 @@
 
 Updated: 2026-09-12. 使用者面向的說明在 [README.md](README.md)，Origin 橋接的架構與安全不變量在 [docs/origin-bridge.md](docs/origin-bridge.md)。本檔只記錄「接手時需要知道、但讀程式碼看不出來」的事。
 
+## UI 與 ⌘O 修正與驗收（2026-09-12 已完成）
+
+已完成 macOS SwiftUI 介面重構與全域 ⌘O 快捷鍵驗收，並通過自動化 AX 測試：
+
+### ⌘O 與 Commands 重構
+- `SlideBridgeApp`（App 頂層）持有 `AppState` 與各頁 ViewModel（`BatchRepairViewModel`、`OriginEditViewModel`、`DoctorViewModel`），直接傳入 `PresentationCommands` 與 `ContentView`。
+- 徹底解決依賴 `FocusedValue` 導致焦點遺失或彈窗關閉後選單命令失效的問題。
+- File 選單命令「選擇簡報檔案...」（⌘O）在以下情境全數實測驗證通過：
+  - 批次修復空白頁：按 ⌘O 正常彈出原生選檔視窗，取消後回復就緒。
+  - Origin 互動編輯頁：按 ⌘O 自動導航切回批次修復頁並彈出選檔視窗，取消後維持在批次修復頁。
+  - 系統環境診斷頁：按 ⌘O 自動導航切回批次修復頁並彈出選檔視窗，取消後維持在批次修復頁。
+  - 忙碌狀態保護：掃描中、修復中或選檔視窗開啟時，選單命令與 ⌘O 自動禁用（disabled）。
+  - 繁中／英文切換：選單命令名稱（「選擇簡報檔案...」與 "Choose Presentation..."）及各頁面內容即時雙向更新。
+
+### 文案清理與細節修正
+- 清理 `Localization.swift` 中殘留的「快速動作 / Quick Actions」字樣，與已廢除 Finder Quick Action、僅保留 PowerPoint 服務選單的現況完全對齊。
+- 診斷頁移除系統整合改用原生 macOS `.alert` sheet，文案與確認行為符合 Apple Design 規範。
+- `scripts/build_mac_app.sh` 增加 `xattr -cr` 與 ad-hoc code sign（`codesign --force --deep --sign -`），確保產出的 App 簽名合規。
+
+### 驗證結果
+- Python 147 項單元測試全綠通過（含 14 項 patched emf2svg-conv 測試）。
+- AX 自動化巡檢三頁面切換、⌘O 觸發與取消、語言即時切換皆正常。
+
 ## 目標與限制
 
 修復 Mac PowerPoint 上顯示異常的 Windows／Origin EMF 圖形，並保留原始嵌入 OLE（Windows 端雙擊仍能用 Origin 編輯）。使用者要求修的是**通用自動轉換器本身**，不能用提供的 Windows PNG 取代——那些圖只能當比對參考。

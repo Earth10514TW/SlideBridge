@@ -2,22 +2,22 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct BatchRepairView: View {
-    @StateObject private var vm = BatchRepairViewModel()
+    @ObservedObject var vm: BatchRepairViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var lm: LanguageManager
+
+    private var isBusy: Bool {
+        vm.isScanning || vm.isFixing
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                // Header
-                VStack(alignment: .leading, spacing: 6) {
-                    Label(lm.t(.repairTitle), systemImage: "wand.and.stars")
-                        .font(.title2.bold())
-                    Text(lm.t(.repairSubtitle))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-
-                Divider()
+                WorkspaceHeader(
+                    title: lm.t(.repairTitle),
+                    subtitle: lm.t(.repairSubtitle),
+                    icon: "wand.and.stars"
+                )
 
                 if let fix = vm.fixReport {
                     // Success View
@@ -30,7 +30,9 @@ struct BatchRepairView: View {
                     dropZone
                 }
             }
-            .padding(24)
+            .frame(maxWidth: 920, alignment: .leading)
+            .padding(28)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
         .alert(lm.t(.processingError), isPresented: $vm.showErrorAlert) {
             Button(lm.t(.ok), role: .cancel) {}
@@ -49,8 +51,8 @@ struct BatchRepairView: View {
                 Image(systemName: vm.isDropTargeted ? "arrow.down.doc.fill" : "doc.badge.plus")
                     .font(.system(size: 36))
                     .foregroundStyle(Color.accentColor)
-                    .scaleEffect(vm.isDropTargeted ? 1.1 : 1.0)
-                    .animation(.spring(response: 0.3), value: vm.isDropTargeted)
+                    .scaleEffect(vm.isDropTargeted && !reduceMotion ? 1.1 : 1.0)
+                    .animation(reduceMotion ? nil : .spring(response: 0.3), value: vm.isDropTargeted)
             }
 
             VStack(spacing: 4) {
@@ -67,10 +69,10 @@ struct BatchRepairView: View {
                 Label(lm.t(.selectFileButton), systemImage: "folder")
             }
             .buttonStyle(.borderedProminent)
-            .controlSize(.regular)
+            .controlSize(.large)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 280)
+        .frame(minHeight: 280)
         .background(
             RoundedRectangle(cornerRadius: 16)
                 .strokeBorder(
@@ -106,20 +108,28 @@ struct BatchRepairView: View {
             // File Header
             HStack(spacing: 14) {
                 Image(systemName: "doc.fill")
-                    .font(.system(size: 40))
-                    .foregroundStyle(.orange)
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 46, height: 46)
+                    .background(Color.orange.gradient, in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(file.lastPathComponent)
                         .font(.headline)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .accessibilityLabel(Text(file.lastPathComponent))
                     Text(file.path)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .accessibilityLabel(Text(file.path))
                 }
 
-                Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 Button {
                     vm.reset()
@@ -127,11 +137,15 @@ struct BatchRepairView: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.title3)
                         .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .disabled(isBusy)
+                .accessibilityLabel(Text(lm.t(.changeFileButton)))
+                .help(lm.t(.changeFileButton))
             }
-            .padding()
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+            .workspaceCard()
 
             // Scan Info Card
             if vm.isScanning {
@@ -141,14 +155,19 @@ struct BatchRepairView: View {
                     Text(lm.t(.scanningMessage))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
                 }
-                .padding()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .workspaceCard()
             } else if let scan = vm.scanReport {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(lm.t(.scanResultsTitle))
                         .font(.headline)
 
-                    HStack(spacing: 20) {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 145), spacing: 12)],
+                        spacing: 12
+                    ) {
                         statPill(title: lm.t(.brokenVectorCharts), count: "\(scan.media.count)", icon: "photo.badge.exclamationmark", color: .red)
                         statPill(title: lm.t(.emfCharts), count: "\(scan.emfCount)", icon: "chart.xyaxis.line", color: .orange)
                         statPill(title: lm.t(.embeddedOle), count: "\(scan.ole_objects)", icon: "cube.transparent", color: .blue)
@@ -160,22 +179,23 @@ struct BatchRepairView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .padding()
-                .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+                .workspaceCard()
 
                 // Options
-                HStack {
+                VStack(alignment: .leading, spacing: 9) {
                     Text(lm.t(.previewDpiLabel))
-                        .font(.subheadline)
+                        .font(.subheadline.weight(.medium))
 
-                    Picker("", selection: $vm.selectedDPI) {
+                    Picker(lm.t(.previewDpiLabel), selection: $vm.selectedDPI) {
                         Text(lm.t(.dpi150)).tag(150)
                         Text(lm.t(.dpi300)).tag(300)
                         Text(lm.t(.dpi600)).tag(600)
                     }
                     .pickerStyle(.segmented)
-                    .frame(maxWidth: 380)
+                    .labelsHidden()
+                    .disabled(isBusy)
                 }
+                .frame(maxWidth: 420, alignment: .leading)
                 .padding(.horizontal, 4)
 
                 // Repair Button
@@ -189,26 +209,38 @@ struct BatchRepairView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 20)
                 } else {
-                    HStack {
-                        Button {
-                            vm.startRepair()
-                        } label: {
-                            Label(lm.t(.startRepairButton), systemImage: "wand.and.stars")
-                                .font(.headline)
-                                .frame(minWidth: 160)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 12) {
+                            repairButton
+                                .frame(maxWidth: .infinity, alignment: .leading)
 
-                        Spacer()
-
-                        Button(lm.t(.changeFileButton)) {
-                            vm.reset()
+                            changeFileButton
                         }
-                        .buttonStyle(.bordered)
+                        VStack(alignment: .leading, spacing: 10) {
+                            repairButton
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            changeFileButton
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                     .padding(.top, 8)
                 }
+            } else if let error = vm.errorMessage {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label(lm.t(.scanFailed), systemImage: "exclamationmark.triangle")
+                        .font(.headline)
+                    Text(error)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                    Button {
+                        vm.loadAndScanFile(url: file)
+                    } label: {
+                        Label(lm.t(.retryScan), systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .workspaceCard()
             }
         }
     }
@@ -238,66 +270,113 @@ struct BatchRepairView: View {
                 HStack {
                     Text(lm.t(.outputFileLabel))
                         .font(.subheadline.bold())
+                    Spacer(minLength: 8)
                     Text(URL(fileURLWithPath: fix.output).lastPathComponent)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
                 Text(fix.output)
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
             }
-            .padding()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Text(URL(fileURLWithPath: fix.output).lastPathComponent))
+            .accessibilityValue(Text(fix.output))
+            .workspaceCard()
 
-            HStack(spacing: 16) {
-                Button {
-                    let outURL = URL(fileURLWithPath: fix.output)
-                    NSWorkspace.shared.activateFileViewerSelecting([outURL])
-                } label: {
-                    Label(lm.t(.revealInFinder), systemImage: "folder")
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    outputActions(fix: fix)
+                    Spacer(minLength: 0)
+                    repairAnotherButton
                 }
-                .buttonStyle(.bordered)
-
-                Button {
-                    let outURL = URL(fileURLWithPath: fix.output)
-                    NSWorkspace.shared.open(outURL)
-                } label: {
-                    Label(lm.t(.openInPowerPoint), systemImage: "play.circle")
+                VStack(alignment: .leading, spacing: 10) {
+                    outputActions(fix: fix)
+                    repairAnotherButton
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(.borderedProminent)
-
-                Spacer()
-
-                Button(lm.t(.repairAnother)) {
-                    vm.reset()
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.accentColor)
             }
         }
-        .padding(24)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.5))
-        )
+        .padding(4)
+    }
+
+    private var repairButton: some View {
+        Button {
+            vm.startRepair()
+        } label: {
+            Label(lm.t(.startRepairButton), systemImage: "wand.and.stars")
+                .font(.headline)
+                .frame(minWidth: 160)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+    }
+
+    private var changeFileButton: some View {
+        Button(lm.t(.changeFileButton)) {
+            vm.reset()
+        }
+        .buttonStyle(.bordered)
+        .disabled(isBusy)
+    }
+
+    private func outputActions(fix: FixReport) -> some View {
+        Group {
+            Button {
+                let outURL = URL(fileURLWithPath: fix.output)
+                NSWorkspace.shared.activateFileViewerSelecting([outURL])
+            } label: {
+                Label(lm.t(.revealInFinder), systemImage: "folder")
+            }
+            .buttonStyle(.bordered)
+
+            Button {
+                let outURL = URL(fileURLWithPath: fix.output)
+                NSWorkspace.shared.open(outURL)
+            } label: {
+                Label(lm.t(.openInPowerPoint), systemImage: "play.circle")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private var repairAnotherButton: some View {
+        Button(lm.t(.repairAnother)) {
+            vm.reset()
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Color.accentColor)
     }
 
     private func statPill(title: String, count: String, icon: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 7) {
                 Image(systemName: icon)
                     .foregroundStyle(color)
+                    .accessibilityHidden(true)
                 Text(title)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Text(count)
                 .font(.title2.bold())
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .windowBackgroundColor)))
+        .padding(13)
+        .frame(maxWidth: .infinity, minHeight: 78, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 11).fill(Color(nsColor: .windowBackgroundColor)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11)
+                .strokeBorder(color.opacity(0.14))
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text(title))
+        .accessibilityValue(Text(count))
     }
 }

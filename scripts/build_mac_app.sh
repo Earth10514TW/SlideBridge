@@ -98,5 +98,9 @@ fi
 mkdir -p "$HOME/.slidebridge"
 printf '%s\n' "$PROJECT_ROOT" > "$HOME/.slidebridge/project-root"
 
+# 5. Ad-hoc code sign bundle
+xattr -cr "$APP_BUNDLE"
+codesign --force --deep --sign - "$APP_BUNDLE"
+
 echo "✔ Build complete: $APP_BUNDLE"
 ls -lh "$MACOS/SlideBridge"

@@ -62,6 +62,14 @@ public enum L10nKey {
     case revealInFinder
     case openInPowerPoint
     case repairAnother
+    case retryScan
+    case scanFailed
+    case uninstallConfirmation
+    case uninstallExplanation
+    case statusPassed
+    case statusWarning
+    case statusFailed
+    case statusInfo
     case processingError
 
     // Origin Edit
@@ -148,11 +156,19 @@ public class LanguageManager: ObservableObject {
         let isEn = (effectiveLanguage == .en)
 
         switch key {
+        case .retryScan: return isEn ? "Scan again" : "重新掃描"
+        case .scanFailed: return isEn ? "Couldn't scan this presentation" : "無法掃描這份簡報"
+        case .uninstallConfirmation: return isEn ? "Remove system integration?" : "移除系統整合？"
+        case .uninstallExplanation: return isEn ? "This removes SlideBridge's PowerPoint Services menu. You can install it again here." : "將移除 SlideBridge 的 PowerPoint 服務選單。你可以隨時在這裡重新安裝。"
+        case .statusPassed: return isEn ? "Passed" : "通過"
+        case .statusWarning: return isEn ? "Warning" : "注意"
+        case .statusFailed: return isEn ? "Failed" : "未通過"
+        case .statusInfo: return isEn ? "Information" : "資訊"
         // Branding & Common
         case .appName:
             return "SlideBridge"
         case .appSubtitle:
-            return isEn ? "PPTX Chart Repair & Origin Bridge" : "PPTX 圖表修復與跨機橋接"
+            return isEn ? "PowerPoint & Origin" : "PowerPoint 與 Origin"
         case .version:
             return isEn ? "Version 0.1.0" : "版本 0.1.0"
         case .nativeArch:
@@ -182,11 +198,11 @@ public class LanguageManager: ObservableObject {
 
         // Batch Repair
         case .repairTitle:
-            return isEn ? "Batch Presentation Chart Repair" : "批次簡報圖表修復"
+            return isEn ? "Repair presentation charts" : "修復簡報圖表"
         case .repairSubtitle:
             return isEn
-                ? "Scans EMF/WMF charts, fixes broken stroke weights and rotated text, renders crisp 300 DPI images, and preserves double-click OLE data."
-                : "自動掃描整份簡報中的 EMF/WMF 向量圖表，修補線條粗細與文字旋轉跑版，渲染為 300 DPI 高畫質影像並保留 OLE 雙擊編輯數據。"
+                ? "Repair chart appearance throughout your presentation while keeping embedded Origin data editable."
+                : "修復整份簡報中的圖表顯示問題，並保留可編輯的 Origin 內嵌資料。"
         case .dropTitle:
             return isEn ? "Drop PowerPoint (.pptx) file here" : "拖曳 PowerPoint (.pptx) 檔案至此處"
         case .dropSubtitle:
@@ -198,13 +214,13 @@ public class LanguageManager: ObservableObject {
         case .scanningMessage:
             return isEn ? "Scanning presentation structure and OLE vector charts..." : "正在深入掃描簡報結構與 OLE 向量圖表..."
         case .scanResultsTitle:
-            return isEn ? "Scan Results & Asset Statistics" : "掃描結果與資產統計"
+            return isEn ? "Scan results" : "掃描結果與資產統計"
         case .brokenVectorCharts:
-            return isEn ? "Broken Vector Charts (EMF/WMF)" : "損壞向量圖 (EMF/WMF)"
+            return isEn ? "Vector charts" : "損壞向量圖 (EMF/WMF)"
         case .emfCharts:
-            return isEn ? "EMF Vector Charts" : "EMF 向量圖"
+            return isEn ? "EMF charts" : "EMF 向量圖"
         case .embeddedOle:
-            return isEn ? "Embedded OLE Objects" : "嵌入 OLE 二進位"
+            return isEn ? "Editable objects" : "嵌入 OLE 二進位"
         case .noBrokenNotice:
             return isEn
                 ? "💡 Notice: No broken EMF/WMF images found. You can still proceed if you wish to re-render charts."
@@ -244,11 +260,11 @@ public class LanguageManager: ObservableObject {
 
         // Origin Edit
         case .originEditTitle:
-            return isEn ? "Interactive Origin Chart Editing" : "Origin 圖表互動編輯"
+            return isEn ? "Edit Origin charts" : "編輯 Origin 圖表"
         case .originEditSubtitle:
             return isEn
-                ? "Select any Origin chart in Mac PowerPoint, launch Windows VM OriginPro with one click, edit precisely, and auto-reload presentation in place."
-                : "在 Mac PowerPoint 中選取任何 Origin 圖表，一鍵跨機喚醒 Windows VM 開啟 OriginPro 進行精確繪圖編輯，自動原地回寫並熱重載簡報。"
+                ? "Edit a selected chart in Windows OriginPro, then update your Mac PowerPoint presentation."
+                : "在 Windows OriginPro 編輯選取的圖表，再將變更更新至 Mac PowerPoint 簡報。"
         case .crossMachineHeader:
             return "Mac PowerPoint ➔ Windows 11 VM Origin"
         case .crossMachineHint:
@@ -310,7 +326,7 @@ public class LanguageManager: ObservableObject {
 
         // Doctor & Settings
         case .doctorTitle:
-            return isEn ? "System Diagnostics & Settings" : "系統環境診斷與設定"
+            return isEn ? "Diagnostics & settings" : "系統診斷與設定"
         case .doctorSubtitle:
             return isEn
                 ? "Verify local Python, PowerPoint, Inkscape, Parallels VM, and integration scripts readiness."

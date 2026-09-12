@@ -1,22 +1,14 @@
 import SwiftUI
 
 struct OriginEditView: View {
-    @StateObject private var vm = OriginEditViewModel()
+    @ObservedObject var vm: OriginEditViewModel
     @EnvironmentObject private var lm: LanguageManager
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 // Header
-                VStack(alignment: .leading, spacing: 6) {
-                    Label(lm.t(.originEditTitle), systemImage: "chart.xyaxis.line")
-                        .font(.title2.bold())
-                    Text(lm.t(.originEditSubtitle))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-
-                Divider()
+                WorkspaceHeader(title: lm.t(.originEditTitle), subtitle: lm.t(.originEditSubtitle), icon: "chart.xyaxis.line")
 
                 // Trigger Action Card
                 VStack(alignment: .leading, spacing: 16) {
@@ -66,8 +58,7 @@ struct OriginEditView: View {
                         .controlSize(.large)
                     }
                 }
-                .padding(20)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                .workspaceCard()
 
                 // Result Card
                 if let report = vm.editReport {
@@ -84,6 +75,8 @@ struct OriginEditView: View {
                             HStack {
                                 Text(lm.t(.presFileLabel)).font(.caption.bold())
                                 Text(URL(fileURLWithPath: report.presentation).lastPathComponent).font(.caption)
+                                    .textSelection(.enabled)
+                                    .help(report.presentation)
                             }
                             HStack {
                                 Text(lm.t(.slideAndShapeLabel)).font(.caption.bold())
@@ -92,11 +85,14 @@ struct OriginEditView: View {
                             HStack {
                                 Text(lm.t(.oleBinaryLabel)).font(.caption.bold())
                                 Text(report.member).font(.caption)
+                                    .textSelection(.enabled)
                             }
                             if let backup = report.backup {
                                 HStack {
                                     Text(lm.t(.backupPresLabel)).font(.caption.bold())
                                     Text(URL(fileURLWithPath: backup).lastPathComponent).font(.caption).foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                        .help(backup)
                                 }
                             }
                         }
@@ -117,17 +113,18 @@ struct OriginEditView: View {
                     Text(lm.t(.guideTitle))
                         .font(.headline)
 
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 18) {
                         stepRow(num: "1", title: lm.t(.step1Title), desc: lm.t(.step1Desc))
                         stepRow(num: "2", title: lm.t(.step2Title), desc: lm.t(.step2Desc))
                         stepRow(num: "3", title: lm.t(.step3Title), desc: lm.t(.step3Desc))
                         stepRow(num: "4", title: lm.t(.step4Title), desc: lm.t(.step4Desc))
                     }
                 }
-                .padding(20)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor).opacity(0.6)))
+                .workspaceCard()
             }
-            .padding(24)
+            .frame(maxWidth: 920, alignment: .leading)
+            .padding(28)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
         .alert(lm.t(.editFailedAlert), isPresented: $vm.showErrorAlert) {
             Button(lm.t(.ok), role: .cancel) {}
@@ -141,12 +138,12 @@ struct OriginEditView: View {
             ZStack {
                 Circle()
                     .fill(Color.accentColor.opacity(0.15))
-                    .frame(width: 24, height: 24)
+                    .frame(width: 30, height: 30)
                 Text(num)
                     .font(.caption.bold())
                     .foregroundStyle(Color.accentColor)
             }
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(title)
                     .font(.subheadline.bold())
                 Text(desc)

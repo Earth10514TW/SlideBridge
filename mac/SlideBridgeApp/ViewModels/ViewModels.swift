@@ -15,6 +15,7 @@ public class BatchRepairViewModel: ObservableObject {
     @Published public var scanReport: ScanReport?
     @Published public var fixReport: FixReport?
 
+    @Published public var isSelectingFile = false
     @Published public var isScanning = false
     @Published public var isFixing = false
     @Published public var isDropTargeted = false
@@ -26,6 +27,9 @@ public class BatchRepairViewModel: ObservableObject {
     public init() {}
 
     public func selectFile() {
+        guard !isScanning, !isFixing, !isSelectingFile else { return }
+        isSelectingFile = true
+        defer { isSelectingFile = false }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "pptx") ?? .data]
         panel.allowsMultipleSelection = false
@@ -36,7 +40,11 @@ public class BatchRepairViewModel: ObservableObject {
     }
 
     public func loadAndScanFile(url: URL) {
+        guard !isScanning, !isFixing else { return }
+        errorMessage = nil
+        showErrorAlert = false
         selectedFileURL = url
+        scanReport = nil
         fixReport = nil
         isScanning = true
         Task {
@@ -53,6 +61,7 @@ public class BatchRepairViewModel: ObservableObject {
     }
 
     public func startRepair() {
+        guard !isScanning, !isFixing else { return }
         guard let url = selectedFileURL else { return }
         isFixing = true
         Task {
@@ -69,6 +78,7 @@ public class BatchRepairViewModel: ObservableObject {
     }
 
     public func reset() {
+        guard !isScanning, !isFixing else { return }
         selectedFileURL = nil
         scanReport = nil
         fixReport = nil
@@ -89,6 +99,7 @@ public class OriginEditViewModel: ObservableObject {
     public init() {}
 
     public func triggerActiveEdit() {
+        guard !isEditing else { return }
         isEditing = true
         editReport = nil
         Task {
@@ -118,6 +129,7 @@ public class DoctorViewModel: ObservableObject {
     public init() {}
 
     public func runDoctor() {
+        guard !isLoading, !isInstalling, !isUninstalling else { return }
         isLoading = true
         Task {
             do {
@@ -133,13 +145,14 @@ public class DoctorViewModel: ObservableObject {
     }
 
     public func installIntegration() {
+        guard !isLoading, !isInstalling, !isUninstalling else { return }
         isInstalling = true
         installMessage = nil
         Task {
             do {
                 _ = try await BridgeProcess.shared.installIntegration()
                 self.isInstalling = false
-                self.installMessage = "✔ 系統整合安裝成功！已註冊至 PowerPoint 與系統服務。"
+                self.installMessage = LanguageManager.shared.t(.installSuccess)
                 self.runDoctor()
             } catch {
                 self.isInstalling = false
@@ -150,13 +163,14 @@ public class DoctorViewModel: ObservableObject {
     }
 
     public func uninstallIntegration() {
+        guard !isLoading, !isInstalling, !isUninstalling else { return }
         isUninstalling = true
         installMessage = nil
         Task {
             do {
                 _ = try await BridgeProcess.shared.uninstallIntegration()
                 self.isUninstalling = false
-                self.installMessage = "✔ 已成功移除所有 macOS 系統整合服務（右鍵快速動作與選單）。"
+                self.installMessage = LanguageManager.shared.t(.uninstallSuccess)
                 self.runDoctor()
             } catch {
                 self.isUninstalling = false
