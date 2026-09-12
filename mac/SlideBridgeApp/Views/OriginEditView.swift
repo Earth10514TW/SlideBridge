@@ -65,9 +65,9 @@ struct OriginEditView: View {
                     HStack(alignment: .center, spacing: 12) {
                         Image(systemName: "cursorarrow.rays")
                             .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(vm.isDoubleCLickInterceptorEnabled && vm.isPowerPointRunning ? Color.green : Color.secondary)
+                            .foregroundStyle(vm.statusColor)
                             .frame(width: 40, height: 40)
-                            .background((vm.isDoubleCLickInterceptorEnabled && vm.isPowerPointRunning ? Color.green : Color.secondary).opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                            .background(vm.statusColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
 
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 8) {
@@ -99,17 +99,29 @@ struct OriginEditView: View {
                             .toggleStyle(.switch)
                             .labelsHidden()
                     }
+                    if vm.isDoubleCLickInterceptorEnabled && !vm.isAccessibilityGranted {
+                        Button(lm.t(.interceptorOpenSettings)) {
+                            PPTAlertInterceptor.openAccessibilityPreferences()
+                        }
+                        .buttonStyle(.link)
+                    }
                 }
                 .workspaceCard()
 
                 // Result Card
                 if let report = vm.editReport {
+                    let isUnchanged = report.status == "unchanged"
+                    let isCancelled = report.status == "cancelled"
+                    let statusColor: Color = isUnchanged ? .blue : (isCancelled ? .secondary : .green)
+                    let statusIcon: String = isUnchanged ? "info.circle.fill" : (isCancelled ? "xmark.circle.fill" : "checkmark.seal.fill")
+                    let statusTitle: String = isUnchanged ? lm.t(.editUnchangedTitle) : (isCancelled ? lm.t(.editCancelledTitle) : lm.t(.editSuccessTitle))
+
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Image(systemName: "checkmark.seal.fill")
-                                .foregroundStyle(.green)
+                            Image(systemName: statusIcon)
+                                .foregroundStyle(statusColor)
                                 .font(.title2)
-                            Text(lm.t(.editSuccessTitle))
+                            Text(statusTitle)
                                 .font(.headline)
                         }
 
@@ -142,12 +154,18 @@ struct OriginEditView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .windowBackgroundColor)))
 
-                        Text(lm.t(.hotReloadNotice))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        if isUnchanged {
+                            Text(lm.t(.editUnchangedTip))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if !isCancelled {
+                            Text(lm.t(.hotReloadNotice))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .padding(16)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.green.opacity(0.08)))
+                    .background(RoundedRectangle(cornerRadius: 12).fill(statusColor.opacity(0.08)))
                 }
 
                 // Workflow Instructions

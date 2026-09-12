@@ -21,6 +21,7 @@ from xml.etree import ElementTree
 
 from .core import (
     SlideBridgeError,
+    UnchangedObjectError,
     _CT_NS,
     _PNG_SIGNATURE,
     _SLIDE_RE,
@@ -270,13 +271,16 @@ def _reject_unchanged_preview(
         except KeyError:
             continue
         if current == new_bytes:
-            raise SlideBridgeError(
+            raise UnchangedObjectError(
                 "the new preview image is byte-identical to the one already in the "
                 f"presentation ({name}), so the chart would still look unchanged.\n"
                 "This usually means the renderer returned a cached image instead of the "
                 "edited chart. Re-open the chart in Origin, make a visible change, press "
                 "Save inside Origin, then use the helper's Save.\n"
-                "Pass --allow-unchanged to write it back anyway."
+                "Pass --allow-unchanged to write it back anyway.",
+                is_near_identical=False,
+                differing_bytes=0,
+                total_bytes=len(new_bytes),
             )
 
 
@@ -293,11 +297,14 @@ def _reject_unchanged_ole(
         return
 
     if new_bytes == current_bytes:
-        raise SlideBridgeError(
+        raise UnchangedObjectError(
             f"the edited OLE is byte-identical to the one already in the presentation: {path}\n"
             "Nothing changed, so writing it back would have no visible effect.\n"
             "In Origin, edit the chart and press Save before closing the helper "
-            "(the helper's own message is 'Save explicitly to commit')."
+            "(the helper's own message is 'Save explicitly to commit').",
+            is_near_identical=False,
+            differing_bytes=0,
+            total_bytes=len(new_bytes),
         )
 
     if len(new_bytes) != len(current_bytes):
@@ -306,7 +313,7 @@ def _reject_unchanged_ole(
     differing = sum(1 for a, b in zip(new_bytes, current_bytes) if a != b)
     ratio = differing / len(new_bytes)
     if ratio < _NEAR_IDENTICAL_RATIO:
-        raise SlideBridgeError(
+        raise UnchangedObjectError(
             f"the edited OLE differs from the current one in only {differing} of "
             f"{len(new_bytes)} bytes ({ratio:.4%}): {path}\n"
             "That looks like re-serialised metadata rather than a chart edit. "
@@ -314,7 +321,10 @@ def _reject_unchanged_ole(
             "(or the edit produced no data/graph change).\n"
             "Tip: In Origin, press Ctrl+S (or File -> Save) to commit your chart changes before "
             "clicking 'Save and Close' in the helper window.\n"
-            "To force writing back this session anyway, pass --allow-unchanged."
+            "To force writing back this session anyway, pass --allow-unchanged.",
+            is_near_identical=True,
+            differing_bytes=differing,
+            total_bytes=len(new_bytes),
         )
 
 
@@ -909,6 +919,18 @@ def edit_presentation(
 
     edited_bin = chosen_session / "edited.bin"
     if not edited_bin.is_file():
+        if ret == 0:
+            if on_status:
+                on_status("Notice: Edit was cancelled by user; presentation left unchanged.")
+            return {
+                "status": "cancelled",
+                "source": str(source_path),
+                "output": str(chosen_output),
+                "member": selected_member,
+                "vm": guest.name,
+                "session": str(chosen_session),
+                "message": "Edit was cancelled by user; presentation left unchanged.",
+            }
         raise SlideBridgeError("No edited.bin found in session; edit was cancelled or failed.")
 
     if in_place:
@@ -926,18 +948,39 @@ def edit_presentation(
     if on_status:
         on_status("Detected saved OLE object. Writing back into presentation...")
 
-    report = writeback_ole(
-        source_path,
-        chosen_session,
-        output_path=chosen_output,
-        force=force,
-        in_place=in_place,
-        allow_unchanged=allow_unchanged,
-    )
-    report["session"] = str(chosen_session)
-    report["member"] = selected_member
-    report["vm"] = guest.name
-    return report
+    try:
+        report = writeback_ole(
+            source_path,
+            chosen_session,
+            output_path=chosen_output,
+            force=force,
+            in_place=in_place,
+            allow_unchanged=allow_unchanged,
+        )
+        report["session"] = str(chosen_session)
+        report["member"] = selected_member
+        report["vm"] = guest.name
+        return report
+    except UnchangedObjectError as exc:
+        if on_status:
+            on_status("Notice: No chart changes detected; presentation left unchanged.")
+        return {
+            "status": "unchanged",
+            "source": str(source_path),
+            "output": str(chosen_output),
+            "member": selected_member,
+            "vm": guest.name,
+            "session": str(chosen_session),
+            "message": str(exc),
+            "is_near_identical": exc.is_near_identical,
+        }
 
 
-__all__ = ["prepare_ole", "writeback_ole", "list_ole_objects", "default_session_parent", "edit_presentation"]
+__all__ = [
+    "prepare_ole",
+    "writeback_ole",
+    "list_ole_objects",
+    "default_session_parent",
+    "edit_presentation",
+    "UnchangedObjectError",
+]

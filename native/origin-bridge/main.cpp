@@ -103,11 +103,19 @@ std::wstring Win32ErrorText(HRESULT hr) {
 }
 
 void Log(const std::wstring& message) {
-  std::wcout << message << std::endl;
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  wchar_t buf[32];
+  swprintf_s(buf, L"[%02d:%02d:%02d.%03d] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+  std::wcerr << buf << message << std::endl;
 }
 
 void LogHr(const std::wstring& operation, HRESULT hr) {
-  std::wcout << operation << L": HRESULT=0x" << std::hex
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  wchar_t buf[32];
+  swprintf_s(buf, L"[%02d:%02d:%02d.%03d] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+  std::wcerr << buf << operation << L": HRESULT=0x" << std::hex
              << static_cast<unsigned long>(hr) << std::dec << Win32ErrorText(hr)
              << std::endl;
 }
@@ -355,6 +363,7 @@ class OriginHost final : public IOleClientSite,
     if (object_) {
       return S_FALSE;
     }
+    Log(L"OleLoad starting...");
     HRESULT hr = OleLoad(storage_, IID_IOleObject,
                          static_cast<IOleClientSite*>(this),
                          reinterpret_cast<void**>(&object_));
@@ -362,6 +371,7 @@ class OriginHost final : public IOleClientSite,
       LogHr(L"OleLoad", hr);
       return hr;
     }
+    Log(L"OleLoad completed successfully");
     siteAttached_ = true;
     hr = object_->SetClientSite(static_cast<IOleClientSite*>(this));
     if (FAILED(hr)) {
@@ -403,6 +413,7 @@ class OriginHost final : public IOleClientSite,
       rect.right = 800;
       rect.bottom = 600;
     }
+    Log(L"DoVerb(OLEIVERB_OPEN) starting...");
     HRESULT hr = object_->DoVerb(OLEIVERB_OPEN, nullptr,
                                  static_cast<IOleClientSite*>(this), 0,
                                  owner_, &rect);
@@ -410,8 +421,33 @@ class OriginHost final : public IOleClientSite,
       LogHr(L"IOleObject::DoVerb(OLEIVERB_OPEN)", hr);
       return hr;
     }
+    Log(L"DoVerb(OLEIVERB_OPEN) completed successfully");
     opened_ = true;
     SetStatus(L"Origin opened. Edit chart, save in Origin, then click 'Save and Close'.");
+
+    // Bring Origin's window to the foreground so the user can immediately edit
+    HWND originWnd = FindWindowW(L"Origin", nullptr);
+    if (!originWnd) {
+      originWnd = FindWindowW(L"Origin80", nullptr);
+    }
+    if (!originWnd) {
+      EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
+        if (IsWindowVisible(hwnd)) {
+          wchar_t title[256];
+          if (GetWindowTextW(hwnd, title, 256) > 0) {
+            if (wcsstr(title, L"Origin") != nullptr) {
+              *reinterpret_cast<HWND*>(lParam) = hwnd;
+              return FALSE;
+            }
+          }
+        }
+        return TRUE;
+      }, reinterpret_cast<LPARAM>(&originWnd));
+    }
+    if (originWnd) {
+      SetForegroundWindow(originWnd);
+    }
+
     const std::wstring sessionDir = GetDirectoryOf(outputBasePath_);
     if (!sessionDir.empty()) {
       Log(L"Origin opened for session: " + sessionDir);
@@ -440,7 +476,7 @@ class OriginHost final : public IOleClientSite,
 
     IDispatch* pApp = cachedApp_;
 
-    // 1. If not already cached, connect to an active, running Origin instance from the ROT.
+    // Connect to an active, running Origin instance from the ROT.
     if (!pApp) {
       const wchar_t* const kAppProgIds[] = {
           L"Origin.Application",
@@ -457,36 +493,28 @@ class OriginHost final : public IOleClientSite,
             if (SUCCEEDED(hr) && pApp) {
               Log(std::wstring(L"AutoExport: Attached to active Origin instance via ") + progId);
               cachedApp_ = pApp;
-              cachedApp_->AddRef();
               break;
             }
           }
         }
       }
+    }
 
-      // 2. If not found in ROT, fallback to CoCreateInstance (Single-Instance preferred)
-      if (!pApp) {
-        CLSID clsidApp{};
-        bool found = GetCachedCLSIDFromProgID(L"Origin.ApplicationSI", &clsidApp);
-        if (!found) {
-          found = GetCachedCLSIDFromProgID(L"Origin.Application", &clsidApp);
-        }
-        if (found) {
-          HRESULT hr = CoCreateInstance(clsidApp, nullptr, CLSCTX_LOCAL_SERVER, IID_IDispatch,
-                                        reinterpret_cast<void**>(&pApp));
-          if (SUCCEEDED(hr) && pApp) {
-            Log(L"AutoExport: Connected to Origin via CoCreateInstance");
-            cachedApp_ = pApp;
-            cachedApp_->AddRef();
-          } else {
-            LogHr(L"CoCreateInstance(Origin COM Application)", hr);
-          }
+    // Fallback: connect to Single-Instance Origin via CoCreateInstance
+    if (!pApp) {
+      CLSID clsidApp{};
+      if (GetCachedCLSIDFromProgID(L"Origin.ApplicationSI", &clsidApp)) {
+        HRESULT hr = CoCreateInstance(clsidApp, nullptr, CLSCTX_LOCAL_SERVER, IID_IDispatch,
+                                      reinterpret_cast<void**>(&pApp));
+        if (SUCCEEDED(hr) && pApp) {
+          Log(L"AutoExport: Attached to Origin via ApplicationSI CoCreateInstance");
+          cachedApp_ = pApp;
         }
       }
     }
 
     if (!pApp) {
-      Log(L"AutoExport: Unable to obtain Origin IDispatch (active or new)");
+      Log(L"AutoExport: No active Origin COM automation server found; using high-fidelity OLE preview.");
       return false;
     }
 
@@ -529,8 +557,19 @@ class OriginHost final : public IOleClientSite,
       SysFreeString(bstr);
     };
 
+    std::wstring sessionDirFwd = sessionDir;
+    for (auto& ch : sessionDirFwd) {
+      if (ch == L'\\') ch = L'/';
+    }
+
+    // Commit in-memory chart edits inside Origin
+    runCmd(L"doc -s;");
+
     // 1. Primary command: expGraph type:=png (proven to work reliably in Origin OLE)
-    runCmd(L"expGraph type:=png filename:=\"preview\" path:=\"" + sessionDir + L"\" overwrite:=replace;");
+    runCmd(L"expGraph type:=png filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace;");
+    if (!FileExists(sessionDir + L"\\preview.png")) {
+      runCmd(L"doc -e P { expGraph type:=png filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace; };");
+    }
 
     std::wstring previewPng = sessionDir + L"\\preview.png";
     if (FileExists(previewPng)) {
@@ -540,7 +579,7 @@ class OriginHost final : public IOleClientSite,
 
     // 2. Secondary fallback command: expGraph type:=svg (only run if PNG export didn't yield preview.png)
     Log(L"AutoExport: preview.png not found after PNG export, attempting SVG fallback...");
-    runCmd(L"expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDir + L"\" overwrite:=replace;");
+    runCmd(L"expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace;");
 
     std::wstring previewSvg = sessionDir + L"\\preview.svg";
     if (FileExists(previewSvg)) {
@@ -762,17 +801,31 @@ class OriginHost final : public IOleClientSite,
     if (sizel.cx <= 0) sizel.cx = 10000;
     if (sizel.cy <= 0) sizel.cy = 7500;
 
-    // 1. Prefer a live render: OleDraw asks the running server to draw its
-    //    current document. The cached GetData(CF_ENHMETAFILE) below is only a
-    //    fallback, because trusting it first is what produced stale previews.
-    {
-      RECT rcHimetric = { 0, 0, sizel.cx, sizel.cy };
-      HDC hdcMeta = CreateEnhMetaFileW(nullptr, tempEmfPath.c_str(), &rcHimetric, L"SlideBridge\0Origin Graph\0\0");
+    // 1. Prefer Origin's own presentation metafile cache via IDataObject
+    IDataObject* dataObj = nullptr;
+    if (SUCCEEDED(object_->QueryInterface(IID_IDataObject, reinterpret_cast<void**>(&dataObj)))) {
+      FORMATETC fetc = { CF_ENHMETAFILE, nullptr, DVASPECT_CONTENT, -1, TYMED_ENHMF };
+      STGMEDIUM medium = {};
+      if (SUCCEEDED(dataObj->GetData(&fetc, &medium))) {
+        if (medium.tymed == TYMED_ENHMF && medium.hEnhMetaFile) {
+          HENHMETAFILE hCopy = CopyEnhMetaFileW(medium.hEnhMetaFile, tempEmfPath.c_str());
+          if (hCopy) {
+            DeleteEnhMetaFile(hCopy);
+            emfSuccess = true;
+          }
+        }
+        ReleaseStgMedium(&medium);
+      }
+      dataObj->Release();
+    }
+
+    // Fallback for EMF: live OleDraw into a metafile DC
+    if (!emfSuccess) {
+      HDC screenDc = GetDC(nullptr);
+      HDC hdcMeta = CreateEnhMetaFileW(screenDc, tempEmfPath.c_str(), nullptr, L"SlideBridge\0Origin Graph\0\0");
       if (hdcMeta) {
-        HDC screenDc = GetDC(nullptr);
         int dpiX = screenDc ? GetDeviceCaps(screenDc, LOGPIXELSX) : 96;
         int dpiY = screenDc ? GetDeviceCaps(screenDc, LOGPIXELSY) : 96;
-        if (screenDc) ReleaseDC(nullptr, screenDc);
         int px = MulDiv(sizel.cx, dpiX, 2540);
         int py = MulDiv(sizel.cy, dpiY, 2540);
         RECT rcPixels = { 0, 0, px, py };
@@ -785,27 +838,7 @@ class OriginHost final : public IOleClientSite,
           DeleteEnhMetaFile(hemf);
         }
       }
-    }
-
-    // 2. Fallback: the object's own cached presentation metafile.
-    if (!emfSuccess) {
-      Log(L"Note: live OleDraw failed; falling back to the cached presentation metafile.");
-      IDataObject* dataObj = nullptr;
-      if (SUCCEEDED(object_->QueryInterface(IID_IDataObject, reinterpret_cast<void**>(&dataObj)))) {
-        FORMATETC fetc = { CF_ENHMETAFILE, nullptr, DVASPECT_CONTENT, -1, TYMED_ENHMF };
-        STGMEDIUM medium = {};
-        if (SUCCEEDED(dataObj->GetData(&fetc, &medium))) {
-          if (medium.tymed == TYMED_ENHMF && medium.hEnhMetaFile) {
-            HENHMETAFILE hCopy = CopyEnhMetaFileW(medium.hEnhMetaFile, tempEmfPath.c_str());
-            if (hCopy) {
-              DeleteEnhMetaFile(hCopy);
-              emfSuccess = true;
-            }
-          }
-          ReleaseStgMedium(&medium);
-        }
-        dataObj->Release();
-      }
+      if (screenDc) ReleaseDC(nullptr, screenDc);
     }
 
     if (emfSuccess) {
@@ -817,7 +850,7 @@ class OriginHost final : public IOleClientSite,
       Log(L"Warning: Failed to export EMF preview.");
     }
 
-    // 3. Export PNG via GDI+ at 300 DPI
+    // 2. Export PNG: render full-bleed directly via OleDraw onto a 300 DPI DIBSection
     bool pngSuccess = false;
     int targetDpi = 300;
     int pngW = MulDiv(sizel.cx, targetDpi, 2540);
@@ -833,49 +866,53 @@ class OriginHost final : public IOleClientSite,
       pngH = 4096;
     }
 
-    if (emfSuccess) {
-      Gdiplus::Metafile metafile(targetEmfPath.c_str());
-      if (metafile.GetLastStatus() == Gdiplus::Ok) {
-        Gdiplus::Bitmap bitmap(pngW, pngH, PixelFormat32bppARGB);
-        Gdiplus::Graphics g(&bitmap);
-        g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
-        g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-        g.Clear(Gdiplus::Color(255, 255, 255, 255));
-        g.DrawImage(&metafile, 0, 0, pngW, pngH);
-        if (bitmap.Save(tempPngPath.c_str(), &kPngEncoderClsid, nullptr) == Gdiplus::Ok) {
-          pngSuccess = true;
-        }
-      }
-    }
-
-    if (!pngSuccess) {
-      BITMAPINFO bmi{};
-      bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-      bmi.bmiHeader.biWidth = pngW;
-      bmi.bmiHeader.biHeight = -pngH;
-      bmi.bmiHeader.biPlanes = 1;
-      bmi.bmiHeader.biBitCount = 32;
-      bmi.bmiHeader.biCompression = BI_RGB;
-      void* bits = nullptr;
-      HDC screenDc = GetDC(nullptr);
-      HDC memDc = CreateCompatibleDC(screenDc);
-      HBITMAP hBmp = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-      if (screenDc) ReleaseDC(nullptr, screenDc);
-      if (memDc && hBmp) {
-        HGDIOBJ oldBmp = SelectObject(memDc, hBmp);
-        RECT rc = { 0, 0, pngW, pngH };
-        HBRUSH whiteBrush = static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH));
-        FillRect(memDc, &rc, whiteBrush);
-        OleDraw(object_, DVASPECT_CONTENT, memDc, &rc);
-        SelectObject(memDc, oldBmp);
-
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = pngW;
+    bmi.bmiHeader.biHeight = -pngH; // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HDC screenDc = GetDC(nullptr);
+    HDC memDc = CreateCompatibleDC(screenDc);
+    HBITMAP hBmp = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (screenDc) ReleaseDC(nullptr, screenDc);
+    if (memDc && hBmp) {
+      HGDIOBJ oldBmp = SelectObject(memDc, hBmp);
+      RECT rc = { 0, 0, pngW, pngH };
+      HBRUSH whiteBrush = static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH));
+      FillRect(memDc, &rc, whiteBrush);
+      HRESULT hrDraw = OleDraw(object_, DVASPECT_CONTENT, memDc, &rc);
+      SelectObject(memDc, oldBmp);
+      if (SUCCEEDED(hrDraw)) {
         Gdiplus::Bitmap bitmap(hBmp, nullptr);
         if (bitmap.Save(tempPngPath.c_str(), &kPngEncoderClsid, nullptr) == Gdiplus::Ok) {
           pngSuccess = true;
         }
       }
-      if (hBmp) DeleteObject(hBmp);
-      if (memDc) DeleteDC(memDc);
+    }
+    if (hBmp) DeleteObject(hBmp);
+    if (memDc) DeleteDC(memDc);
+
+    // Fallback: render properly scaled from EMF via GDI+
+    if (!pngSuccess && emfSuccess) {
+      Gdiplus::Metafile metafile(targetEmfPath.c_str());
+      if (metafile.GetLastStatus() == Gdiplus::Ok) {
+        Gdiplus::RectF bounds;
+        Gdiplus::Unit unit;
+        metafile.GetBounds(&bounds, &unit);
+        Gdiplus::Bitmap bitmap(pngW, pngH, PixelFormat32bppARGB);
+        Gdiplus::Graphics g(&bitmap);
+        g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+        g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+        g.Clear(Gdiplus::Color(255, 255, 255, 255));
+        g.DrawImage(&metafile, Gdiplus::Rect(0, 0, pngW, pngH),
+                    bounds.X, bounds.Y, bounds.Width, bounds.Height, unit);
+        if (bitmap.Save(tempPngPath.c_str(), &kPngEncoderClsid, nullptr) == Gdiplus::Ok) {
+          pngSuccess = true;
+        }
+      }
     }
 
     if (pngSuccess) {
@@ -907,6 +944,20 @@ class OriginHost final : public IOleClientSite,
     return S_OK;
   }
 
+  HRESULT DiscardObject() {
+    if (!object_) {
+      return S_FALSE;
+    }
+    HRESULT hr = object_->Close(OLECLOSE_NOSAVE);
+    if (FAILED(hr)) {
+      LogHr(L"IOleObject::Close(OLECLOSE_NOSAVE) on discard", hr);
+      return hr;
+    }
+    closed_ = true;
+    SetStatus(L"Discarded changes; the input remains unchanged.");
+    return S_OK;
+  }
+
   // This is an explicit discard escape hatch for a poisoned persistence
   // lifecycle.  The caller must obtain a deliberate user confirmation before
   // invoking it; the input storage is never opened for writing.
@@ -917,18 +968,12 @@ class OriginHost final : public IOleClientSite,
     if (!persistencePoisoned_) {
       return E_ACCESSDENIED;
     }
-    HRESULT hr = object_->Close(OLECLOSE_NOSAVE);
-    if (FAILED(hr)) {
-      LogHr(L"IOleObject::Close(OLECLOSE_NOSAVE) after discard", hr);
-      return hr;
-    }
-    closed_ = true;
-    SetStatus(L"Discarded unsaved changes; the input remains unchanged.");
-    return S_OK;
+    return DiscardObject();
   }
 
   bool HasObject() const { return object_ != nullptr; }
   bool IsClosed() const { return closed_; }
+  bool IsOpened() const { return opened_; }
   bool PersistencePoisoned() const { return persistencePoisoned_; }
 
   void ReleaseObject() {
@@ -1155,6 +1200,9 @@ class EditApp final {
       storage_->Release();
       storage_ = nullptr;
     }
+    if (discarded_) {
+      DeleteFileW(output_.c_str());
+    }
   }
 
   HRESULT CreateAndShow() {
@@ -1255,26 +1303,26 @@ class EditApp final {
       case WM_SHOWWINDOW:
         if (wParam && !openAttempted_) {
           openAttempted_ = true;
-          HRESULT hr = host_->LoadObject();
-          if (SUCCEEDED(hr)) {
-            hr = host_->OpenInOrigin();
-          }
-          if (FAILED(hr)) {
-            exitCode_ = hr;
-            SetStatus(L"Unable to open the Origin object. Close this window.");
-          }
+          PostMessageW(window_, WM_APP + 2, 0, 0);
         }
         return 0;
 
       case WM_ACTIVATE:
         if (LOWORD(wParam) != WA_INACTIVE && host_ && host_->HasObject()) {
-          const std::wstring sessionDir = host_->GetSessionDirectory();
-          if (!sessionDir.empty()) {
-            if (host_->AutoExportOriginGraph(sessionDir)) {
-              InvalidateRect(window_, nullptr, TRUE);
-              SetStatus(L"Preview updated from Origin. Click 'Save and Close' when ready.");
+          if (host_->IsOpened()) {
+            const std::wstring sessionDir = host_->GetSessionDirectory();
+            if (!sessionDir.empty()) {
+              ULONGLONG now = GetTickCount64();
+              if (now - lastAutoExportTick_ >= 1000) {
+                lastAutoExportTick_ = now;
+                if (host_->AutoExportOriginGraph(sessionDir)) {
+                  InvalidateRect(window_, nullptr, TRUE);
+                  host_->SetStatus(L"Preview updated from Origin. Click 'Save and Close' when ready.");
+                }
+              }
             }
           }
+          InvalidateRect(window_, nullptr, TRUE);
         }
         return 0;
 
@@ -1310,11 +1358,42 @@ class EditApp final {
               break;
           }
         }
-        break;
-
-      case WM_CLOSE:
-        PostMessageW(window_, WM_APP + 1, kSaveCloseButton, 0);
         return 0;
+
+      case WM_APP + 2: {
+        SetStatus(L"Opening Origin chart...");
+        UpdateWindow(window_);
+        HRESULT hr = host_->LoadObject();
+        if (SUCCEEDED(hr)) {
+          hr = host_->OpenInOrigin();
+        }
+        if (FAILED(hr)) {
+          exitCode_ = hr;
+          SetStatus(L"Unable to open the Origin object. Close this window.");
+        }
+        return 0;
+      }
+
+      case WM_CLOSE: {
+        int answer = MessageBoxW(
+            window_,
+            L"Do you want to save changes to PowerPoint before closing?\n\n"
+            L"- Click 'Yes' to Save and Update PowerPoint.\n"
+            L"- Click 'No' to Discard and keep original presentation unchanged.\n"
+            L"- Click 'Cancel' to return to editing.",
+            L"SlideBridge - Close",
+            MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON1);
+        if (answer == IDYES) {
+          PostMessageW(window_, WM_APP + 1, MAKEWPARAM(kSaveCloseButton, BN_CLICKED), 0);
+        } else if (answer == IDNO) {
+          discarded_ = true;
+          if (host_) {
+            host_->DiscardObject();
+          }
+          DestroyWindow(window_);
+        }
+        return 0;
+      }
 
       case WM_DESTROY:
         PostQuitMessage(exitCode_ == S_OK ? 0 : static_cast<int>(exitCode_));
@@ -1344,7 +1423,6 @@ class EditApp final {
         506, 16, 150, 32, window_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDiscardCloseButton)),
         GetModuleHandleW(nullptr), nullptr);
-    EnableWindow(discardButton_, FALSE);
     status_ = CreateWindowW(L"STATIC", L"Loading...", WS_CHILD | WS_VISIBLE,
                             16, 60, 980, 28, window_,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusControl)),
@@ -1366,7 +1444,6 @@ class EditApp final {
     HRESULT hr = host_->Save();
     if (FAILED(hr)) {
       if (host_->PersistencePoisoned()) {
-        EnableWindow(discardButton_, TRUE);
         SetStatus(L"Persistence is unusable; confirm Discard and Close to abandon this output copy.");
       } else {
         SetStatus(L"Save failed; the window remains open.");
@@ -1393,25 +1470,23 @@ class EditApp final {
 
   void DiscardAndClose() {
     if (!host_ || !host_->HasObject()) {
+      discarded_ = true;
       DestroyWindow(window_);
-      return;
-    }
-    if (!host_->PersistencePoisoned()) {
-      SetStatus(L"Discard is available only after a failed SaveCompleted lifecycle.");
       return;
     }
     int answer = MessageBoxW(
         window_,
-        L"Discard unsaved changes and close? Only the disposable output copy will be abandoned; the input remains unchanged.",
-        L"Confirm discard", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+        L"Discard unsaved changes and close? The original presentation will remain unchanged.",
+        L"Confirm Discard", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
     if (answer != IDYES) {
       return;
     }
-    HRESULT hr = host_->DiscardAfterPersistenceFailure();
+    HRESULT hr = host_->DiscardObject();
     if (FAILED(hr)) {
       SetStatus(L"Discard failed; the window remains open.");
       return;
     }
+    discarded_ = true;
     DestroyWindow(window_);
   }
 
@@ -1423,6 +1498,8 @@ class EditApp final {
   OriginHost* host_ = nullptr;
   HRESULT exitCode_ = S_OK;
   bool openAttempted_ = false;
+  bool discarded_ = false;
+  ULONGLONG lastAutoExportTick_ = 0;
 };
 
 HRESULT RunProbe(const std::wstring& input, const std::wstring& output,
@@ -1552,6 +1629,11 @@ void PrintUsage() {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+  HWND console = GetConsoleWindow();
+  if (console) {
+    ShowWindow(console, SW_HIDE);
+  }
+
   if (argc < 2) {
     PrintUsage();
     return 2;

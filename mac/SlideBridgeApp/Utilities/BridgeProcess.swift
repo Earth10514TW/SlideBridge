@@ -180,16 +180,36 @@ public actor BridgeProcess {
         )
     }
 
-    public func scan(fileURL: URL) async throws -> ScanReport {
-        let output = try await run(subcommand: ["scan", fileURL.path, "--json"])
-        guard let data = output.data(using: .utf8) else {
+    private func extractJSON(from raw: String) -> String {
+        let lines = raw.components(separatedBy: .newlines)
+        for index in 0..<lines.count {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("{") {
+                let candidate = lines[index...].joined(separator: "\n")
+                if let data = candidate.data(using: .utf8),
+                   (try? JSONSerialization.jsonObject(with: data)) != nil {
+                    return candidate
+                }
+            }
+        }
+        return raw
+    }
+
+    private func decodeJSON<T: Decodable>(_ type: T.Type, from raw: String) throws -> T {
+        let jsonStr = extractJSON(from: raw)
+        guard let data = jsonStr.data(using: .utf8) else {
             throw BridgeError.decodingFailed("無效的 UTF-8 資料")
         }
         do {
-            return try JSONDecoder().decode(ScanReport.self, from: data)
+            return try JSONDecoder().decode(T.self, from: data)
         } catch {
-            throw BridgeError.decodingFailed(error.localizedDescription + "\n原始輸出: " + output)
+            throw BridgeError.decodingFailed(error.localizedDescription + "\n原始輸出: " + raw)
         }
+    }
+
+    public func scan(fileURL: URL) async throws -> ScanReport {
+        let output = try await run(subcommand: ["scan", fileURL.path, "--json"])
+        return try decodeJSON(ScanReport.self, from: output)
     }
 
     public func fix(fileURL: URL, outputURL: URL? = nil, dpi: Int = 300) async throws -> FixReport {
@@ -198,38 +218,17 @@ public actor BridgeProcess {
             args.append(contentsOf: ["-o", out.path])
         }
         let output = try await run(subcommand: args)
-        guard let data = output.data(using: .utf8) else {
-            throw BridgeError.decodingFailed("無效的 UTF-8 資料")
-        }
-        do {
-            return try JSONDecoder().decode(FixReport.self, from: data)
-        } catch {
-            throw BridgeError.decodingFailed(error.localizedDescription + "\n原始輸出: " + output)
-        }
+        return try decodeJSON(FixReport.self, from: output)
     }
 
     public func doctor() async throws -> DoctorReport {
         let output = try await run(subcommand: ["doctor", "--json"])
-        guard let data = output.data(using: .utf8) else {
-            throw BridgeError.decodingFailed("無效的 UTF-8 資料")
-        }
-        do {
-            return try JSONDecoder().decode(DoctorReport.self, from: data)
-        } catch {
-            throw BridgeError.decodingFailed(error.localizedDescription + "\n原始輸出: " + output)
-        }
+        return try decodeJSON(DoctorReport.self, from: output)
     }
 
     public func editActive() async throws -> EditActiveReport {
         let output = try await run(subcommand: ["edit-active", "--json"])
-        guard let data = output.data(using: .utf8) else {
-            throw BridgeError.decodingFailed("無效的 UTF-8 資料")
-        }
-        do {
-            return try JSONDecoder().decode(EditActiveReport.self, from: data)
-        } catch {
-            throw BridgeError.decodingFailed(error.localizedDescription + "\n原始輸出: " + output)
-        }
+        return try decodeJSON(EditActiveReport.self, from: output)
     }
 
     public func installIntegration() async throws -> String {

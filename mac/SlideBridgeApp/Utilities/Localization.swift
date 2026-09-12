@@ -80,6 +80,9 @@ public enum L10nKey {
     case interceptorActiveStatus
     case interceptorInactiveStatus
     case interceptorPptNotRunning
+    case interceptorPermissionRequired
+    case interceptorConnecting
+    case interceptorOpenSettings
     case interceptorToggle
     case crossMachineHeader
     case crossMachineHint
@@ -87,6 +90,9 @@ public enum L10nKey {
     case editingInstruction
     case editSelectedChartButton
     case editSuccessTitle
+    case editUnchangedTitle
+    case editUnchangedTip
+    case editCancelledTitle
     case presFileLabel
     case slideAndShapeLabel
     case oleBinaryLabel
@@ -316,6 +322,12 @@ public class LanguageManager: ObservableObject {
             return isEn ? "Disabled" : "已停用"
         case .interceptorPptNotRunning:
             return isEn ? "PowerPoint Not Running" : "PowerPoint 未開啟"
+        case .interceptorPermissionRequired:
+            return isEn ? "Accessibility permission required" : "需要輔助使用權限"
+        case .interceptorConnecting:
+            return isEn ? "Waiting for PowerPoint access" : "等待連線至 PowerPoint"
+        case .interceptorOpenSettings:
+            return isEn ? "Allow SlideBridge in Accessibility Settings" : "前往輔助使用設定允許 SlideBridge"
         case .interceptorToggle:
             return isEn ? "Enable double-click auto-edit" : "啟用雙擊圖表自動編輯"
         case .crossMachineHeader:
@@ -336,6 +348,14 @@ public class LanguageManager: ObservableObject {
             return isEn ? "Edit Selected Chart in Origin" : "在 Origin 編輯目前選取的圖表"
         case .editSuccessTitle:
             return isEn ? "Chart Edited & Reloaded Successfully!" : "圖表編輯與回寫成功！"
+        case .editUnchangedTitle:
+            return isEn ? "No Changes Detected (Presentation Left Unchanged)" : "未偵測到圖表變更（簡報保持原樣）"
+        case .editUnchangedTip:
+            return isEn
+                ? "Tip: If you edited the chart in Origin, make sure to press Ctrl+S (or File -> Save) inside Origin before closing the helper."
+                : "提示：若剛才有在 Origin 編輯圖表，請記得先在 Origin 視窗內按下 Ctrl+S（或點 File -> Save）存檔後再關閉。"
+        case .editCancelledTitle:
+            return isEn ? "Edit Cancelled (Presentation Left Unchanged)" : "已取消編輯（簡報保持原樣）"
         case .presFileLabel:
             return isEn ? "Presentation File:" : "簡報檔案："
         case .slideAndShapeLabel:

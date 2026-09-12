@@ -1,6 +1,6 @@
 # Origin 編輯橋接原型
 
-目標是讓 Windows 只安裝 Origin 與本專案 helper，就能編輯由 PPTX 抽出的嵌入 OLE。Windows Helper 內建即時圖表預覽畫布（所見即所得），並於儲存時自動匯出成對的向量 EMF 與 300 DPI 高保真 PNG 預覽圖。Word、Mac PowerPoint 雙擊攔截與 Add-in 均未實作。
+目標是讓 Windows 只安裝 Origin 與本專案 helper，就能編輯由 PPTX 抽出的嵌入 OLE。Windows Helper 內建即時圖表預覽畫布（所見即所得），並於儲存時自動匯出成對的向量 EMF 與 300 DPI 高保真 PNG 預覽圖。Mac PowerPoint 雙擊攔截由 SlideBridge App 提供，需授予 App 輔助使用權限並保持執行；授權後自動恢復監聽。Word 與 Add-in 尚未實作。
 
 ## 建立測試副本
 
@@ -139,14 +139,15 @@ PowerPoint 會把每個 OLE 物件包在 `<mc:AlternateContent>` 內，且**兩�
 
 ### 未變更的 OLE 會被拒絕寫回
 
-`writeback_ole` 會拒絕「不可能產生任何視覺變化」的回寫：
+底層 `writeback_ole` 會拒絕「不可能產生任何視覺變化」的回寫，拋出 `UnchangedObjectError`：
 
-- 編輯後的 OLE 與簡報內現有的位元完全相同 → 報錯。
-- 長度相同但相異位元低於 0.1%（`_NEAR_IDENTICAL_RATIO`）→ 報錯，因為那通常是重新序列化的中介資料，而非圖表編輯。
+- 編輯後的 OLE 與簡報內現有的位元完全相同 → 拒絕寫回。
+- 長度相同但相異位元低於 0.1%（`_NEAR_IDENTICAL_RATIO`）→ 拒絕寫回，因為那通常是重新序列化的中介資料，而非圖表編輯。
 
 這道檢查**刻意不受 `force` 影響**：`edit-active` 一律傳入 `force=True` 以略過來源雜湊比對，那是另一件事，不該連帶關閉這道防護。需要刻意寫回未變更內容時使用 `--allow-unchanged`。
 
-**在 Origin 內必須先存檔。** helper 的狀態文字已寫明「Save explicitly to commit」——若只在 Origin 修改卻未在 Origin 內存檔，`IPersistStorage::Save` 只會序列化 Origin 那份未變更的文件，回寫結果看起來便毫無變化。此檢查會把這種靜默失敗轉為明確錯誤。
+**在 Origin 內必須先存檔。** 若只在 Origin 修改卻未在 Origin 內存檔，`IPersistStorage::Save` 只會序列化 Origin 那份未變更的文件，回寫結果看起來便毫無變化。
+* 在高階流程（`edit`、`edit-active` 與 macOS App）中，系統會攔截 `UnchangedObjectError` 並以 `status: "unchanged"` 優雅結束（Notice），提示使用者投影片保持原樣，並提醒若有修改記得在 Origin 內按 Ctrl+S，避免產生令人焦慮的致命錯誤訊息。
 
 ### 預覽圖的來源：不可信任 Origin 的展示快取
 

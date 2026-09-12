@@ -118,6 +118,8 @@ public class OriginEditViewModel: ObservableObject {
         }
     }
     @Published public var isPowerPointRunning = false
+    @Published public var isMonitoring = false
+    @Published public var isAccessibilityGranted = false
 
     public let interceptor = PPTAlertInterceptor.shared
 
@@ -130,6 +132,12 @@ public class OriginEditViewModel: ObservableObject {
         interceptor.$isPowerPointRunning
             .receive(on: DispatchQueue.main)
             .assign(to: &$isPowerPointRunning)
+        interceptor.$isMonitoring
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$isMonitoring)
+        interceptor.$isAccessibilityGranted
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$isAccessibilityGranted)
         self.isDoubleCLickInterceptorEnabled = interceptor.isEnabled
     }
 
@@ -137,14 +145,20 @@ public class OriginEditViewModel: ObservableObject {
         if !isDoubleCLickInterceptorEnabled {
             return .secondary
         }
-        return isPowerPointRunning ? .green : .orange
+        return isMonitoring ? .green : .orange
     }
 
     public func statusText(using lm: LanguageManager) -> String {
         if !isDoubleCLickInterceptorEnabled {
             return lm.t(.interceptorInactiveStatus)
         }
-        return isPowerPointRunning ? lm.t(.interceptorActiveStatus) : lm.t(.interceptorPptNotRunning)
+        if !isAccessibilityGranted {
+            return lm.t(.interceptorPermissionRequired)
+        }
+        if !isPowerPointRunning {
+            return lm.t(.interceptorPptNotRunning)
+        }
+        return lm.t(isMonitoring ? .interceptorActiveStatus : .interceptorConnecting)
     }
 
     public func triggerActiveEdit() {

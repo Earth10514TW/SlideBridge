@@ -44,6 +44,10 @@ SlideBridge 採**極致輕量、零多餘依賴**設計。進行圖表修復時�
 
 拖曳 `.pptx` 進視窗即可批次修復（300 DPI PNG、保留 OLE），內含環境診斷與一鍵重裝系統整合。雙擊 `dist/SlideBridge.app` 或 `open dist/SlideBridge.app` 啟動。
 
+若要在 Mac PowerPoint 雙擊 Origin 圖表編輯，請保持 SlideBridge 開啟，並在「系統設定 → 隱私權與安全性 → 輔助使用」允許 **SlideBridge**。編輯頁必須顯示「監聽中」；「需要輔助使用權限」表示尚無法接管 PowerPoint 的錯誤對話框。授權後會自動重新連線，無需重開 PowerPoint。以本機 ad-hoc 簽章重新編譯 App 後，macOS 可能要求重新授權；若設定中的舊項目已開啟但 App 仍顯示需要權限，請移除舊項目，再加入目前的 `dist/SlideBridge.app`。Windows VM 也需啟動並已安裝 Origin。
+
+雙擊接管透過 macOS 輔助使用 API 關閉 PowerPoint 的 OLE 伺服器錯誤，再啟動編輯橋接；錯誤視窗可能短暫出現。
+
 ### 2. PowerPoint 服務選單（一鍵編輯 Origin 圖表）
 
 安裝後在 PowerPoint 選取圖表 → `Microsoft PowerPoint → 服務 (Services) → 在 Origin 編輯 (SlideBridge)`，完成後自動熱重載並停在原投影片。

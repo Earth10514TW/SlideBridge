@@ -22,7 +22,7 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree
 
-from .core import SlideBridgeError, _path_string
+from .core import SlideBridgeError, UnchangedObjectError, _path_string
 from .bridge import prepare_ole, writeback_ole, list_ole_objects
 from .vm import Guest, detect_guest, launch_vm_helper
 
@@ -367,16 +367,46 @@ def edit_active_presentation(
 
     edited_bin = chosen_session / "edited.bin"
     if not edited_bin.is_file():
+        if ret == 0:
+            return {
+                "presentation": pptx_path,
+                "slide_index": slide_index,
+                "shape_name": resolved["shape_name"],
+                "member": member,
+                "vm": guest.name,
+                "session": str(chosen_session),
+                "in_place": in_place,
+                "backup": None,
+                "preview_format": None,
+                "status": "cancelled",
+                "message": "Edit was cancelled by user; presentation left unchanged.",
+            }
         raise SlideBridgeError("No edited.bin found in session; edit was cancelled or failed.")
 
     # 6. Writeback
-    writeback_report = writeback_ole(
-        source_path=pptx_path,
-        session_dir=chosen_session,
-        force=True,  # Bypass SHA256 check because PowerPoint just saved it
-        in_place=in_place,
-        allow_unchanged=allow_unchanged,
-    )
+    try:
+        writeback_report = writeback_ole(
+            source_path=pptx_path,
+            session_dir=chosen_session,
+            force=True,  # Bypass SHA256 check because PowerPoint just saved it
+            in_place=in_place,
+            allow_unchanged=allow_unchanged,
+        )
+    except UnchangedObjectError as exc:
+        return {
+            "presentation": pptx_path,
+            "slide_index": slide_index,
+            "shape_name": resolved["shape_name"],
+            "member": member,
+            "vm": guest.name,
+            "session": str(chosen_session),
+            "in_place": in_place,
+            "backup": None,
+            "preview_format": None,
+            "status": "unchanged",
+            "message": str(exc),
+            "is_near_identical": exc.is_near_identical,
+        }
 
     # 7. Hot-reload in PowerPoint
     if reload_after:

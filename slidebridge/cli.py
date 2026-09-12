@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import sys
 
-from .core import SlideBridgeError, repair, scan
+from .core import SlideBridgeError, UnchangedObjectError, repair, scan
 from .bridge import prepare_ole, writeback_ole, list_ole_objects, edit_presentation
 from .locate import ensure_login_path, find_executable
 
@@ -135,16 +135,25 @@ def main(argv=None):
         elif args.command == "prepare-ole":
             report = prepare_ole(args.input, args.member, args.output)
         elif args.command == "writeback-ole":
-            report = writeback_ole(
-                args.input,
-                args.session,
-                output_path=args.output,
-                ole_path=args.ole,
-                preview_path=args.preview,
-                force=args.force,
-                in_place=args.in_place,
-                allow_unchanged=args.allow_unchanged,
-            )
+            try:
+                report = writeback_ole(
+                    args.input,
+                    args.session,
+                    output_path=args.output,
+                    ole_path=args.ole,
+                    preview_path=args.preview,
+                    force=args.force,
+                    in_place=args.in_place,
+                    allow_unchanged=args.allow_unchanged,
+                )
+            except UnchangedObjectError as exc:
+                report = {
+                    "status": "unchanged",
+                    "input": str(args.input),
+                    "session": str(args.session),
+                    "message": str(exc),
+                    "is_near_identical": exc.is_near_identical,
+                }
         elif args.command == "edit-active":
             from .powerpoint import edit_active_presentation
             report = edit_active_presentation(
@@ -191,19 +200,47 @@ def main(argv=None):
         elif args.command == "prepare-ole":
             print(f"OLE session: {args.output.resolve()}\nOriginal presentation unchanged.")
         elif args.command == "writeback-ole":
-            print(f"Updated presentation: {report['output']}\nOLE member: {report['member']} (SHA-256: {report['ole_sha256_after'][:8]}...)\nPreview: {report['preview_source']} ({report['preview_format'].upper()})")
+            if report.get("status") == "unchanged":
+                print(f"ℹ️  [Notice] No changes detected; presentation not modified: {report.get('input', args.input)}")
+                if report.get("is_near_identical"):
+                    print("  The edited OLE has only metadata differences (<0.1%) and no chart data change.")
+                    print("  Tip: In Origin, press Ctrl+S (or File -> Save) to commit your chart changes.")
+                print("  To force writing back this session anyway, pass --allow-unchanged.")
+            else:
+                print(f"Updated presentation: {report['output']}\nOLE member: {report['member']} (SHA-256: {report['ole_sha256_after'][:8]}...)\nPreview: {report['preview_source']} ({report['preview_format'].upper()})")
         elif args.command == "edit-active":
-            print(f"✔ Active chart updated successfully: {report['presentation']}")
-            print(f"  Slide: {report['slide_index']} (Shape: {report['shape_name']})")
-            print(f"  OLE object: {report['member']}")
-            if report.get("backup"):
-                print(f"  Backup created: {report['backup']}")
-            print(f"  Preview format: {report.get('preview_format', '').upper()}")
-            print("  PowerPoint presentation reloaded.")
+            if report.get("status") == "cancelled":
+                print(f"ℹ️  [Notice] Edit cancelled by user; presentation left unchanged: {report['presentation']}")
+            elif report.get("status") == "unchanged":
+                print(f"ℹ️  [Notice] No chart changes detected; presentation left unchanged: {report['presentation']}")
+                print(f"  Slide: {report['slide_index']} (Shape: {report['shape_name']})")
+                print(f"  OLE object: {report['member']}")
+                if report.get("is_near_identical"):
+                    print("  The chart was not saved inside Origin before closing the helper (or produced no data/graph change).")
+                    print("  Tip: In Origin, press Ctrl+S (or File -> Save) to commit your chart changes before clicking 'Save and Close'.")
+                print("  To force writing back this session anyway, pass --allow-unchanged.")
+            else:
+                print(f"✔ Active chart updated successfully: {report['presentation']}")
+                print(f"  Slide: {report['slide_index']} (Shape: {report['shape_name']})")
+                print(f"  OLE object: {report['member']}")
+                if report.get("backup"):
+                    print(f"  Backup created: {report['backup']}")
+                print(f"  Preview format: {report.get('preview_format', '').upper()}")
+                print("  PowerPoint presentation reloaded.")
         elif args.command == "edit":
-            print(f"✔ Presentation updated successfully: {report['output']}")
-            print(f"  OLE object: {report['member']}")
-            print(f"  Preview format: {report['preview_format'].upper()} ({report['preview_source']})")
+            if report.get("status") == "cancelled":
+                print(f"ℹ️  [Notice] Edit cancelled by user; presentation left unchanged: {report.get('source', args.input)}")
+            elif report.get("status") == "unchanged":
+                print(f"ℹ️  [Notice] No chart changes detected; presentation left unchanged: {report.get('source', args.input)}")
+                print(f"  OLE object: {report['member']}")
+                if report.get("is_near_identical"):
+                    print("  The chart was not saved inside Origin before closing the helper (or produced no data/graph change).")
+                    print("  Tip: In Origin, press Ctrl+S (or File -> Save) to commit your chart changes before clicking 'Save and Close'.")
+                print("  To force writing back this session anyway, pass --allow-unchanged.")
+            else:
+                print(f"✔ Presentation updated successfully: {report['output']}")
+                print(f"  OLE object: {report['member']}")
+                print(f"  Preview format: {report['preview_format'].upper()} ({report['preview_source']})")
         elif args.command == "scan":
             print(f"{report['source']}\nOLE objects: {report['ole_objects']}")
             for item in report['media']:
@@ -219,3 +256,7 @@ def main(argv=None):
     except (SlideBridgeError, OSError, ValueError) as exc:
         print(f"SlideBridge: {exc}", file=sys.stderr)
         return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

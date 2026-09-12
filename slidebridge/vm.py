@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -131,7 +132,7 @@ class ParallelsBackend(VmBackend):
     def run_program(self, cli: str, guest: Guest, argv: Sequence[str]) -> int:
         cmd = [cli, "exec", guest.name, "--current-user", *argv]
         try:
-            return subprocess.run(cmd).returncode
+            return subprocess.run(cmd, stdout=sys.stderr).returncode
         except (subprocess.SubprocessError, OSError) as exc:
             raise SlideBridgeError(
                 f"Failed to execute Windows Helper via prlctl: {exc}"

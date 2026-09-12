@@ -758,6 +758,25 @@ class EditPresentationTests(unittest.TestCase):
         self.assertEqual(report["vm"], "Win11")
         self.assertTrue(self.output.is_file())
 
+    def test_edit_presentation_unchanged_returns_gracefully(self):
+        package_with_preview(
+            self.source, cfb_payload(0), minimal_png(10, 10, b"original"), preview_name="image1.png"
+        )
+
+        def mock_launch(guest, session_dir, **kwargs):
+            # Write identical OLE back (simulate no edits)
+            (session_dir / "edited.bin").write_bytes(cfb_payload(0))
+            (session_dir / "preview.png").write_bytes(minimal_png(20, 20, b"new-chart"))
+            return 0
+
+        with patch("slidebridge.vm.detect_guest", return_value=Guest("parallels", "Win11")), patch(
+            "slidebridge.vm.launch_vm_helper", side_effect=mock_launch
+        ):
+            report = edit_presentation(self.source, output_path=self.output)
+
+        self.assertEqual(report["status"], "unchanged")
+        self.assertFalse(self.output.is_file())
+
     def test_helper_failure_raises_error(self):
         package_with_preview(
             self.source, cfb_payload(0), minimal_png(10, 10, b"original"), preview_name="image1.png"

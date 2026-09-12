@@ -42,6 +42,22 @@ class RepairError(SlideBridgeError):
     """Raised when a presentation cannot be safely repaired."""
 
 
+class UnchangedObjectError(SlideBridgeError):
+    """Raised when an edited OLE object or preview is unchanged or near-identical."""
+
+    def __init__(
+        self,
+        message: str,
+        is_near_identical: bool = False,
+        differing_bytes: int = 0,
+        total_bytes: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.is_near_identical = is_near_identical
+        self.differing_bytes = differing_bytes
+        self.total_bytes = total_bytes
+
+
 _MAX_UNCOMPRESSED = 512 * 1024 * 1024
 _REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _REL_NS_STRICT = "http://purl.oclc.org/ooxml/officeDocument/relationships"

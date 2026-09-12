@@ -260,9 +260,10 @@ class PowerPointIntegrationTests(unittest.TestCase):
              patch("slidebridge.powerpoint.detect_guest", return_value=Guest("parallels", "Win11")), \
              patch("slidebridge.powerpoint.launch_vm_helper", side_effect=mock_launch):
 
-            # Without allow_unchanged, raises SlideBridgeError
-            with self.assertRaises(SlideBridgeError):
-                edit_active_presentation(session_dir=session1, reload_after=False, allow_unchanged=False)
+            # Without allow_unchanged, returns status 'unchanged' gracefully without raising
+            rep_unchanged = edit_active_presentation(session_dir=session1, reload_after=False, allow_unchanged=False)
+            self.assertEqual(rep_unchanged["status"], "unchanged")
+            self.assertEqual(rep_unchanged["member"], "ppt/embeddings/oleObject1.bin")
 
             # With allow_unchanged=True, succeeds
             rep = edit_active_presentation(session_dir=session2, reload_after=False, allow_unchanged=True)

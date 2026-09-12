@@ -69,6 +69,8 @@ public struct EditActiveReport: Codable {
     public let member: String
     public let backup: String?
     public let preview_format: String?
+    public let message: String?
+    public let is_near_identical: Bool?
 }
 
 public enum AppTab: String, CaseIterable, Identifiable {
