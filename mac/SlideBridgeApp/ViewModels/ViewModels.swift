@@ -5,8 +5,24 @@ import UniformTypeIdentifiers
 @MainActor
 public class AppState: ObservableObject {
     @Published public var selectedTab: AppTab = .batchRepair
+    @AppStorage("has_completed_onboarding") public var hasCompletedOnboarding: Bool = false
+    @AppStorage("selected_usage_mode") public var storedUsageMode: String = UsageMode.fullBridge.rawValue
+    @Published public var showOnboardingSheet: Bool = false
 
-    public init() {}
+    public init() {
+        if !hasCompletedOnboarding {
+            showOnboardingSheet = true
+        }
+    }
+
+    public var selectedUsageMode: UsageMode {
+        get { UsageMode(rawValue: storedUsageMode) ?? .fullBridge }
+        set { storedUsageMode = newValue.rawValue }
+    }
+
+    public func resetAndShowOnboarding() {
+        showOnboardingSheet = true
+    }
 }
 
 @MainActor

@@ -260,4 +260,15 @@ public final class PPTAlertInterceptor: ObservableObject {
               let str = value as? String else { return nil }
         return str
     }
+
+    public static func isAccessibilityTrusted(prompt: Bool = false) -> Bool {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
+        return AXIsProcessTrustedWithOptions(options)
+    }
+
+    public static func openAccessibilityPreferences() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
 }

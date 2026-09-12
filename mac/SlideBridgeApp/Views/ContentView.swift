@@ -80,11 +80,15 @@ struct ContentView: View {
                 case .originEdit:
                     OriginEditView(vm: originEditVM)
                 case .doctor:
-                    DoctorView(vm: doctorVM)
+                    DoctorView(vm: doctorVM, appState: appState)
                 }
             }
             .frame(minWidth: 540, minHeight: 480)
             .background(Color(nsColor: .windowBackgroundColor))
+            .sheet(isPresented: $appState.showOnboardingSheet) {
+                OnboardingView(appState: appState, doctorVM: doctorVM)
+                    .environmentObject(lm)
+            }
             .toolbar {
                 ToolbarItem(placement: .automatic) {
                     Menu {

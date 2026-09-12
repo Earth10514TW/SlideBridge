@@ -3,6 +3,7 @@ import SwiftUI
 struct DoctorView: View {
     @StateObject private var confirmation = IntegrationConfirmation()
     @ObservedObject var vm: DoctorViewModel
+    var appState: AppState? = nil
     @EnvironmentObject private var lm: LanguageManager
 
     var body: some View {
@@ -14,13 +15,26 @@ struct DoctorView: View {
 
                     Spacer()
 
-                    Button {
-                        vm.runDoctor()
-                    } label: {
-                        Label(lm.t(.refreshButton), systemImage: "arrow.clockwise")
+                    HStack(spacing: 8) {
+                        if let appState = appState {
+                            Button {
+                                appState.resetAndShowOnboarding()
+                            } label: {
+                                Label(lm.t(.rerunOnboardingButton), systemImage: "sparkles")
+                            }
+                            .buttonStyle(.bordered)
+                            .accessibilityLabel(lm.t(.rerunOnboardingButton))
+                            .accessibilityIdentifier("rerunOnboardingButton")
+                        }
+
+                        Button {
+                            vm.runDoctor()
+                        } label: {
+                            Label(lm.t(.refreshButton), systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(vm.isLoading || vm.isInstalling || vm.isUninstalling)
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(vm.isLoading || vm.isInstalling || vm.isUninstalling)
                 }
 
                 // Overall Health Banner

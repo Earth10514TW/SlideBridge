@@ -25,6 +25,19 @@ Updated: 2026-09-12. 使用者面向的說明在 [README.md](README.md)，Origin
 - Python 147 項單元測試全綠通過（含 14 項 patched emf2svg-conv 測試）。
 - AX 自動化巡檢三頁面切換、⌘O 觸發與取消、語言即時切換皆正常。
 
+## 初次引導設定精靈與系統診斷整合（2026-09-12 新增）
+
+- **架構設計**：
+  - 引導設定（`OnboardingView`）為一次性（One-time）或手動喚起的 4 步驟設定精靈：
+    1. 歡迎與語言偏好（繁體中文 / English / 跟隨系統）。
+    2. 使用模式選擇（純批次修復 `batchOnly` vs Origin 雙向編輯 `fullBridge`）。
+    3. 系統整合（一鍵安裝 PowerPoint 服務選單腳本）與 macOS 輔助使用權限引導（`PPTAlertInterceptor.openAccessibilityPreferences()`）。
+    4. 完成設定與跳轉（自動導向選擇的使用模式分頁）。
+  - 狀態儲存於 `AppState` 之 `@AppStorage("has_completed_onboarding")` 與 `@AppStorage("selected_usage_mode")`。首次啟動若未完成則自動彈出原生 Sheet。
+  - 診斷（`DoctorView`）保留作為動態體檢與日常排錯中心，並於頂部新增「重新執行引導設定」按鈕（`rerunOnboardingButton`）；macOS 頂層「輔助說明 (Help)」選單亦加入「設定引導精靈...」快捷命令，兩者相輔相成。
+- **編譯注意**：
+  - 命令列 `swiftc` 編譯時避開 Swift 5.9+ `@State` 巨集外掛缺失問題，`OnboardingView` 採用專屬 `OnboardingViewModel: ObservableObject` 與 `@StateObject` 管理狀態與輪詢計時器。
+
 ## PPT 雙擊圖表自動接管機制（2026-09-12 新增）
 
 - **背景與原理**：Mac 版 PowerPoint 雙擊 Windows Origin OLE 圖表時，因本機無對應伺服器會彈出「找不到此物件的伺服器應用程式」錯誤 Sheet。

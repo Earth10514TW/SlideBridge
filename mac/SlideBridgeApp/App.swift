@@ -40,6 +40,11 @@ struct SlideBridgeApp: App {
                     languageManager.currentLanguage = .system
                 }
             }
+            CommandGroup(after: .help) {
+                Button(languageManager.t(.setupGuideMenu)) {
+                    appState.resetAndShowOnboarding()
+                }
+            }
         }
     }
 }

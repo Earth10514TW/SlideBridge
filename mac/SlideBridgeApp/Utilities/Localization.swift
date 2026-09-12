@@ -123,6 +123,39 @@ public enum L10nKey {
     case uninstallSuccess
     case doctorFailedAlert
     case interfaceLanguage
+
+    // Onboarding & Setup Wizard
+    case onboardingWelcomeTitle
+    case onboardingWelcomeDesc
+    case onboardingNext
+    case onboardingBack
+    case onboardingFinish
+    case onboardingStepModeTitle
+    case onboardingStepModeDesc
+    case modeBatchOnlyTitle
+    case modeBatchOnlyDesc
+    case modeBatchOnlyReq
+    case modeFullBridgeTitle
+    case modeFullBridgeDesc
+    case modeFullBridgeReq
+    case recommendedBadge
+    case onboardingStepSetupTitle
+    case onboardingStepSetupDesc
+    case integrationItemTitle
+    case integrationItemDesc
+    case integrationInstalled
+    case integrationNotInstalled
+    case accessibilityItemTitle
+    case accessibilityItemDesc
+    case grantPermissionButton
+    case permissionGranted
+    case permissionNeeded
+    case onboardingDoneTitle
+    case onboardingDoneDesc
+    case onboardingDoneHint
+    case startUsingApp
+    case rerunOnboardingButton
+    case setupGuideMenu
 }
 
 @MainActor
@@ -393,6 +426,92 @@ public class LanguageManager: ObservableObject {
             return isEn ? "Diagnostics Execution Failed" : "診斷執行失敗"
         case .interfaceLanguage:
             return isEn ? "Interface Language" : "介面語言"
+
+        // Onboarding & Setup Wizard
+        case .onboardingWelcomeTitle:
+            return isEn ? "Welcome to SlideBridge" : "歡迎使用 SlideBridge"
+        case .onboardingWelcomeDesc:
+            return isEn
+                ? "The bridge between PowerPoint and Origin on macOS. Complete a few simple steps to get the best experience."
+                : "專為 macOS 打造的 PowerPoint 與 Origin 跨平台圖表橋接工具。只需簡單幾步，即可完成最佳使用環境配置。"
+        case .onboardingNext:
+            return isEn ? "Next" : "下一步"
+        case .onboardingBack:
+            return isEn ? "Back" : "上一步"
+        case .onboardingFinish:
+            return isEn ? "Get Started" : "開始使用"
+        case .onboardingStepModeTitle:
+            return isEn ? "Choose Usage Mode" : "選擇主要使用模式"
+        case .onboardingStepModeDesc:
+            return isEn
+                ? "Select the mode that best fits your workflow. You can switch between them at any time:"
+                : "根據您的工作流程挑選最合適的模式，後續可隨時在各分頁自由切換："
+        case .modeBatchOnlyTitle:
+            return isEn ? "Batch Repair" : "批次修復圖形"
+        case .modeBatchOnlyDesc:
+            return isEn
+                ? "Fix broken, blurry, or missing Origin/EMF charts in presentations with high-quality SVG or crisp previews."
+                : "在 Mac 開啟含有 Origin 圖表的 PPT 破圖、模糊或顯示紅叉時，快速將 EMF 轉換為高畫質向量 SVG 或清晰點陣圖。"
+        case .modeBatchOnlyReq:
+            return isEn
+                ? "✓ Fully local, no Windows virtual machine required"
+                : "✓ 僅需本機環境，無須安裝或啟動 Windows 虛擬機"
+        case .modeFullBridgeTitle:
+            return isEn ? "Origin Interactive Bridge" : "Origin 雙向互動編輯"
+        case .modeFullBridgeDesc:
+            return isEn
+                ? "Double-click charts in PowerPoint to seamlessly edit them inside Origin on Windows, with instant hot-reload."
+                : "在 Mac 上雙擊 PPT 圖表時自動接管錯誤彈窗，喚醒 Windows VM 內的 Origin 進行編輯，存檔後自動熱重載回 PPT。"
+        case .modeFullBridgeReq:
+            return isEn
+                ? "✓ Requires Parallels Desktop, a Windows VM, and Origin"
+                : "✓ 需安裝 Parallels Desktop、Windows 虛擬機與 Origin"
+        case .recommendedBadge:
+            return isEn ? "Recommended" : "推薦"
+        case .onboardingStepSetupTitle:
+            return isEn ? "System Integration & Permissions" : "系統整合與權限配置"
+        case .onboardingStepSetupDesc:
+            return isEn
+                ? "Configure macOS and PowerPoint integration for a seamless workflow:"
+                : "設定 macOS 與 PowerPoint 整合，體驗更流暢的操作流程："
+        case .integrationItemTitle:
+            return isEn ? "PowerPoint Services Integration" : "PowerPoint 服務選單整合"
+        case .integrationItemDesc:
+            return isEn
+                ? "Registers SlideBridge in PowerPoint's Services menu and installs helper scripts."
+                : "在 PowerPoint 的「服務」選單中加入 SlideBridge 動作，並編譯本機輔助腳本。"
+        case .integrationInstalled:
+            return isEn ? "Installed" : "已安裝完成"
+        case .integrationNotInstalled:
+            return isEn ? "Not Installed" : "尚未安裝"
+        case .accessibilityItemTitle:
+            return isEn ? "macOS Accessibility Permission" : "macOS 輔助使用權限"
+        case .accessibilityItemDesc:
+            return isEn
+                ? "Required to intercept PowerPoint's 'server not found' dialog when double-clicking charts."
+                : "雙擊 PPT 圖表時，自動關閉『找不到伺服器』彈窗並跨機喚醒 Origin 所需（僅雙向編輯需要）。"
+        case .grantPermissionButton:
+            return isEn ? "Open System Settings..." : "開啟系統設定..."
+        case .permissionGranted:
+            return isEn ? "Granted" : "已獲授權"
+        case .permissionNeeded:
+            return isEn ? "Permission Required" : "需要授權"
+        case .onboardingDoneTitle:
+            return isEn ? "All Set!" : "一切就緒！"
+        case .onboardingDoneDesc:
+            return isEn
+                ? "Initial setup is complete. You are ready to start bridging PowerPoint and Origin."
+                : "您已完成初次引導設定。現在即可開始使用 SlideBridge 處理您的簡報圖表。"
+        case .onboardingDoneHint:
+            return isEn
+                ? "💡 Tip: If you ever encounter VM or dependency issues, visit 'Doctor' in the sidebar for a full diagnostic check."
+                : "💡 提示：若日後虛擬機未啟動或遇到任何環境異常，可隨時前往側邊欄的「系統環境診斷」進行完整體檢。"
+        case .startUsingApp:
+            return isEn ? "Launch SlideBridge" : "進入 SlideBridge"
+        case .rerunOnboardingButton:
+            return isEn ? "Run Setup Wizard" : "重新執行引導設定"
+        case .setupGuideMenu:
+            return isEn ? "Setup Wizard..." : "設定引導精靈..."
         }
     }
 }

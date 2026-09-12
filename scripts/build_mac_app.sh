@@ -86,6 +86,7 @@ swiftc -parse-as-library \
   "$PROJECT_ROOT/mac/SlideBridgeApp/Views/BatchRepairView.swift" \
   "$PROJECT_ROOT/mac/SlideBridgeApp/Views/OriginEditView.swift" \
   "$PROJECT_ROOT/mac/SlideBridgeApp/Views/DoctorView.swift" \
+  "$PROJECT_ROOT/mac/SlideBridgeApp/Views/OnboardingView.swift" \
   "$PROJECT_ROOT/mac/SlideBridgeApp/Views/ContentView.swift" \
   "$PROJECT_ROOT/mac/SlideBridgeApp/App.swift" \
   -o "$MACOS/SlideBridge"

@@ -95,3 +95,10 @@ public enum AppTab: String, CaseIterable, Identifiable {
         }
     }
 }
+
+public enum UsageMode: String, Codable, CaseIterable, Identifiable {
+    case batchOnly = "batchOnly"
+    case fullBridge = "fullBridge"
+
+    public var id: String { rawValue }
+}
