@@ -12,11 +12,11 @@ SlideBridge 採**極致輕量、零多餘依賴**設計。進行圖表修復時�
 | --- | --- | --- |
 | **作業系統** | macOS 12+ | 原生支援 Apple Silicon (M 系列) 與 Intel Mac |
 | **Python** | 3.10+ | 系統內建或 Homebrew 安裝均可；**純標準函式庫，零 pip 第三方依賴** |
-| **resvg** | 最新版 | 純 CLI 靜音向量渲染引擎（**必裝**）：<br>`brew install resvg` |
+| **resvg** | 最新版 | 純 CLI 靜音向量渲染引擎。<br>• **一鍵自動安裝**：執行 `bash scripts/install_mac_integration.sh`（或透過 App 引導精靈）會自動檢查並安裝<br>• **手動安裝**：`brew install resvg` |
 | **emf2svg-conv** | 專案內建 | 修補版 EMF 轉換工具，**專案已內建於 `bin/emf2svg-conv`**，免手動安裝 |
 
 > [!TIP]
-> 安裝完 `resvg` 後，隨時可執行診斷指令確認本機環境狀態：
+> 隨時可執行診斷指令確認本機所有環境與依賴就緒狀態：
 > ```sh
 > python3 -m slidebridge doctor
 > ```

@@ -241,6 +241,24 @@ class HelperCheckTests(unittest.TestCase):
         self.assertIn("MB", check.detail)
 
 
+class ResvgCheckTests(unittest.TestCase):
+    def test_resvg_found_reports_ok(self):
+        with patch("slidebridge.cli.find_resvg", return_value="/mock/resvg"):
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value.stdout = "resvg 0.48.1\n"
+                mock_run.return_value.returncode = 0
+                check = doctor.check_resvg()
+        self.assertEqual(check.status, OK)
+        self.assertIn("/mock/resvg", check.detail)
+
+    def test_resvg_missing_reports_fail_with_install_advice(self):
+        with patch("slidebridge.cli.find_resvg", return_value=None):
+            check = doctor.check_resvg()
+        self.assertEqual(check.status, FAIL)
+        self.assertIn("install_mac_integration.sh", check.fix)
+        self.assertIn("brew install resvg", check.fix)
+
+
 class ReportTests(unittest.TestCase):
     def test_report_marks_each_status_and_lists_fixes(self):
         checks = [

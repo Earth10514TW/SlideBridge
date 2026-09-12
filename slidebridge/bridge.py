@@ -45,7 +45,10 @@ _CFB_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _CFB_MIN_SIZE = 512
 _OLE_RELATIONSHIP_NAME = "oleobject"
 _EMBEDDINGS_PREFIX = "ppt/embeddings/"
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _RESVG_CANDIDATES = (
+    str(_PROJECT_ROOT / "bin" / "resvg"),
+    str(_PROJECT_ROOT / "artifacts" / "bin" / "resvg"),
     "/opt/homebrew/bin/resvg",
     "/usr/local/bin/resvg",
     "/opt/local/bin/resvg",

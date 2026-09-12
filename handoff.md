@@ -114,7 +114,8 @@ clang++ -std=c++17 -Wall -Wextra native/origin-bridge/save_sequence_test.cpp -o 
   - 原生支援 RGBA 透明背景，並透過 `png_white_to_transparent` 消除外部白邊。
   - 支援 `--renderer`（可指定 resvg 自訂路徑）、`--transparent`、`--no-transparent`，已徹底移除舊版 `--inkscape` 參數與函式參數。
   - **WMF 處理原則**：WMF 屬微軟早期 16 位元過時格式，自動修復時安全略過（原樣保留於 package 內不毀損），並在報表與 CLI 中提示；若使用者有正確圖表，仍支援透過 `--preview` 置換為 reference PNG。
-  - 176 項單元測試全數通過。
+  - **自動安裝與環境預檢**：`scripts/install_mac_integration.sh`（或 App 引導精靈）自動檢測並安裝 `resvg`（支援 Homebrew 或 GitHub 官方二進位下載），`doctor` 納入 `resvg` 自動檢測。
+  - 178 項單元測試全數通過。
 
 ## 待辦
 

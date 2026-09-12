@@ -312,11 +312,32 @@ def check_automation_permission() -> Check:
     )
 
 
+def check_resvg() -> Check:
+    from .cli import find_resvg
+    resvg_bin = find_resvg()
+    if resvg_bin:
+        try:
+            proc = subprocess.run([resvg_bin, "--version"], capture_output=True, text=True, timeout=5)
+            version = proc.stdout.strip() or proc.stderr.strip()
+            detail = f"{resvg_bin} ({version})" if version else resvg_bin
+        except Exception:
+            detail = resvg_bin
+        return Check("SVG renderer (resvg)", OK, detail)
+
+    return Check(
+        "SVG renderer (resvg)",
+        FAIL,
+        "resvg executable not found",
+        "Run 'bash scripts/install_mac_integration.sh' to auto-install, or run 'brew install resvg'.",
+    )
+
+
 def run_checks() -> list[Check]:
     return [
         check_python(),
         check_project_root(),
         check_recorded_root(),
+        check_resvg(),
         check_powerpoint(),
         check_handler(),
         check_service(),

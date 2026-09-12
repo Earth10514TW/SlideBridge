@@ -26,6 +26,47 @@ printf '%s\n' "$PROJECT_ROOT" > "$HOME/.slidebridge/project-root"
 echo "=== Installing SlideBridge Mac Integration ==="
 echo "Project root: $PROJECT_ROOT"
 
+# 0. Check and ensure resvg (pure CLI vector renderer) is installed
+echo "Checking SVG renderer (resvg)..."
+RESVG_FOUND=false
+if command -v resvg >/dev/null 2>&1; then
+  RESVG_FOUND=true
+  echo "✔ resvg is already available in PATH: $(command -v resvg)"
+elif [ -x "/opt/homebrew/bin/resvg" ] || [ -x "/usr/local/bin/resvg" ] || [ -x "$PROJECT_ROOT/bin/resvg" ]; then
+  RESVG_FOUND=true
+  echo "✔ resvg is already installed."
+else
+  echo "resvg not found. Attempting automatic installation..."
+  if command -v brew >/dev/null 2>&1; then
+    echo "Installing resvg via Homebrew..."
+    if brew install resvg; then
+      RESVG_FOUND=true
+      echo "✔ resvg installed successfully via Homebrew."
+    fi
+  fi
+  if [ "$RESVG_FOUND" != "true" ]; then
+    echo "Homebrew installation unavailable; downloading prebuilt resvg binary..."
+    ARCH="$(uname -m)"
+    if [ "$ARCH" = "arm64" ]; then
+      ZIP_NAME="resvg-macos-aarch64.zip"
+    else
+      ZIP_NAME="resvg-macos-x86_64.zip"
+    fi
+    DOWNLOAD_URL="https://github.com/linebender/resvg/releases/download/v0.48.1/${ZIP_NAME}"
+    TEMP_ZIP="$(mktemp -t resvg-dl.XXXXXX).zip"
+    mkdir -p "$PROJECT_ROOT/bin"
+    if curl -fsSL -o "$TEMP_ZIP" "$DOWNLOAD_URL" && unzip -q -o "$TEMP_ZIP" resvg -d "$PROJECT_ROOT/bin"; then
+      chmod +x "$PROJECT_ROOT/bin/resvg"
+      xattr -d com.apple.quarantine "$PROJECT_ROOT/bin/resvg" 2>/dev/null || true
+      RESVG_FOUND=true
+      echo "✔ Downloaded and configured resvg at $PROJECT_ROOT/bin/resvg"
+    else
+      echo "⚠️ Could not auto-download resvg. You can install it with 'brew install resvg'."
+    fi
+    rm -f "$TEMP_ZIP"
+  fi
+fi
+
 # 1. PowerPoint Application Scripts folder
 PP_SCRIPTS_DIR="$HOME/Library/Application Scripts/com.microsoft.Powerpoint"
 mkdir -p "$PP_SCRIPTS_DIR"

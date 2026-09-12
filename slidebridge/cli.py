@@ -12,7 +12,10 @@ from .locate import ensure_login_path, find_executable
 #: Install locations for resvg, tried when it is not on PATH. Needed because
 #: GUI-launched runs (PowerPoint Services menu, double-clicked .app) do not
 #: inherit Homebrew's PATH.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _RESVG_CANDIDATES = (
+    str(_PROJECT_ROOT / "bin" / "resvg"),
+    str(_PROJECT_ROOT / "artifacts" / "bin" / "resvg"),
     "/opt/homebrew/bin/resvg",
     "/usr/local/bin/resvg",
     "/opt/local/bin/resvg",

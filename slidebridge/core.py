@@ -706,7 +706,11 @@ def _convert_single_item(
         if renderer:
             active_renderer = renderer
         else:
-            resvg_bin = shutil.which("resvg")
+            local_resvg = (
+                shutil.which(os.path.join(project_dir, "bin", "resvg"))
+                or shutil.which(os.path.join(project_dir, "artifacts", "bin", "resvg"))
+            )
+            resvg_bin = local_resvg or shutil.which("resvg")
             if not resvg_bin:
                 for candidate in _RESVG_CANDIDATES:
                     resvg_bin = shutil.which(candidate)
