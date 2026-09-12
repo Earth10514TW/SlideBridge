@@ -60,6 +60,48 @@ struct OriginEditView: View {
                 }
                 .workspaceCard()
 
+                // Double-Click Auto-Intercept Card
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(alignment: .center, spacing: 12) {
+                        Image(systemName: "cursorarrow.rays")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(vm.isDoubleCLickInterceptorEnabled && vm.isPowerPointRunning ? Color.green : Color.secondary)
+                            .frame(width: 40, height: 40)
+                            .background((vm.isDoubleCLickInterceptorEnabled && vm.isPowerPointRunning ? Color.green : Color.secondary).opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 8) {
+                                Text(lm.t(.doubleClickInterceptTitle))
+                                    .font(.headline)
+
+                                // Status Badge
+                                HStack(spacing: 5) {
+                                    Circle()
+                                        .fill(vm.statusColor)
+                                        .frame(width: 7, height: 7)
+                                    Text(vm.statusText(using: lm))
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(vm.statusColor)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(vm.statusColor.opacity(0.12), in: Capsule())
+                            }
+
+                            Text(lm.t(.doubleClickInterceptDesc))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Toggle(lm.t(.interceptorToggle), isOn: $vm.isDoubleCLickInterceptorEnabled)
+                            .toggleStyle(.switch)
+                            .labelsHidden()
+                    }
+                }
+                .workspaceCard()
+
                 // Result Card
                 if let report = vm.editReport {
                     VStack(alignment: .leading, spacing: 12) {

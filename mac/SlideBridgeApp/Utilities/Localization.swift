@@ -75,6 +75,12 @@ public enum L10nKey {
     // Origin Edit
     case originEditTitle
     case originEditSubtitle
+    case doubleClickInterceptTitle
+    case doubleClickInterceptDesc
+    case interceptorActiveStatus
+    case interceptorInactiveStatus
+    case interceptorPptNotRunning
+    case interceptorToggle
     case crossMachineHeader
     case crossMachineHint
     case editingConnecting
@@ -265,6 +271,20 @@ public class LanguageManager: ObservableObject {
             return isEn
                 ? "Edit a selected chart in Windows OriginPro, then update your Mac PowerPoint presentation."
                 : "在 Windows OriginPro 編輯選取的圖表，再將變更更新至 Mac PowerPoint 簡報。"
+        case .doubleClickInterceptTitle:
+            return isEn ? "Double-Click Auto-Intercept" : "雙擊圖表自動接管"
+        case .doubleClickInterceptDesc:
+            return isEn
+                ? "Double-clicking an Origin chart in PowerPoint automatically dismisses the error dialog and launches Windows Origin."
+                : "在 PowerPoint 中對 Origin 圖表點兩下時，自動關閉系統錯誤彈窗並喚醒 Windows Origin。"
+        case .interceptorActiveStatus:
+            return isEn ? "Active (Double-click in PPT to edit)" : "監聽中（在 PPT 雙擊圖表即可編輯）"
+        case .interceptorInactiveStatus:
+            return isEn ? "Disabled" : "已停用"
+        case .interceptorPptNotRunning:
+            return isEn ? "PowerPoint Not Running" : "PowerPoint 未開啟"
+        case .interceptorToggle:
+            return isEn ? "Enable double-click auto-edit" : "啟用雙擊圖表自動編輯"
         case .crossMachineHeader:
             return "Mac PowerPoint ➔ Windows 11 VM Origin"
         case .crossMachineHint:

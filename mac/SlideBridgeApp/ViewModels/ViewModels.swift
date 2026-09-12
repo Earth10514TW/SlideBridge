@@ -96,7 +96,40 @@ public class OriginEditViewModel: ObservableObject {
     @Published public var errorMessage: String?
     @Published public var showErrorAlert = false
 
-    public init() {}
+    @Published public var isDoubleCLickInterceptorEnabled: Bool = true {
+        didSet {
+            interceptor.isEnabled = isDoubleCLickInterceptorEnabled
+        }
+    }
+    @Published public var isPowerPointRunning = false
+
+    public let interceptor = PPTAlertInterceptor.shared
+
+    public init() {
+        interceptor.setOnIntercept { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.triggerActiveEdit()
+            }
+        }
+        interceptor.$isPowerPointRunning
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$isPowerPointRunning)
+        self.isDoubleCLickInterceptorEnabled = interceptor.isEnabled
+    }
+
+    public var statusColor: Color {
+        if !isDoubleCLickInterceptorEnabled {
+            return .secondary
+        }
+        return isPowerPointRunning ? .green : .orange
+    }
+
+    public func statusText(using lm: LanguageManager) -> String {
+        if !isDoubleCLickInterceptorEnabled {
+            return lm.t(.interceptorInactiveStatus)
+        }
+        return isPowerPointRunning ? lm.t(.interceptorActiveStatus) : lm.t(.interceptorPptNotRunning)
+    }
 
     public func triggerActiveEdit() {
         guard !isEditing else { return }

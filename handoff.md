@@ -25,6 +25,16 @@ Updated: 2026-09-12. 使用者面向的說明在 [README.md](README.md)，Origin
 - Python 147 項單元測試全綠通過（含 14 項 patched emf2svg-conv 測試）。
 - AX 自動化巡檢三頁面切換、⌘O 觸發與取消、語言即時切換皆正常。
 
+## PPT 雙擊圖表自動接管機制（2026-09-12 新增）
+
+- **背景與原理**：Mac 版 PowerPoint 雙擊 Windows Origin OLE 圖表時，因本機無對應伺服器會彈出「找不到此物件的伺服器應用程式」錯誤 Sheet。
+- **實作**：`mac/SlideBridgeApp/Utilities/PPTAlertInterceptor.swift`
+  - 使用 macOS `AXObserver` 專注監聽 PowerPoint（`com.microsoft.Powerpoint`）之 `kAXSheetCreatedNotification` 與 `kAXWindowCreatedNotification`。
+  - 當建立的視窗／Sheet 含有「伺服器應用程式」或 "server application" 時，於數十毫秒內自動透過 `AXPress` 點擊「確定」關閉視窗，並呼叫 `editActive()` 跨機開啟圖表編輯。
+  - 具備 2.5 秒防抖（debounce）保護，防止連續事件觸發多次編輯。
+  - 透過 `NSWorkspace` 自動監聽 PowerPoint 啟動與終止事件，動態掛載與解除 Observer。
+- **UI 整合**：於「Origin 互動編輯」頁面新增專屬控制卡片，即時反映監聽狀態（🟢 監聽中、🟡 PowerPoint 未開啟、⚪ 已停用），並提供 Toggle 開關讓使用者隨時啟用／停用。已完成中英文雙語支援。
+
 ## 目標與限制
 
 修復 Mac PowerPoint 上顯示異常的 Windows／Origin EMF 圖形，並保留原始嵌入 OLE（Windows 端雙擊仍能用 Origin 編輯）。使用者要求修的是**通用自動轉換器本身**，不能用提供的 Windows PNG 取代——那些圖只能當比對參考。

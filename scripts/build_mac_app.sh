@@ -81,6 +81,7 @@ swiftc -parse-as-library \
   "$PROJECT_ROOT/mac/SlideBridgeApp/Models/Models.swift" \
   "$PROJECT_ROOT/mac/SlideBridgeApp/Utilities/Localization.swift" \
   "$PROJECT_ROOT/mac/SlideBridgeApp/Utilities/BridgeProcess.swift" \
+  "$PROJECT_ROOT/mac/SlideBridgeApp/Utilities/PPTAlertInterceptor.swift" \
   "$PROJECT_ROOT/mac/SlideBridgeApp/ViewModels/ViewModels.swift" \
   "$PROJECT_ROOT/mac/SlideBridgeApp/Views/BatchRepairView.swift" \
   "$PROJECT_ROOT/mac/SlideBridgeApp/Views/OriginEditView.swift" \
