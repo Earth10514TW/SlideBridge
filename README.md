@@ -2,6 +2,42 @@
 
 修復 PowerPoint 在 Mac 上顯示異常的 Windows／Origin EMF 圖形：掃描 `.pptx` 中的 EMF／WMF，用本機轉換器產生 PNG 重新接上關聯，輸出新簡報，同時保留原始 OLE 二進位（Windows 端仍可雙擊用 Origin 編輯）。另有已驗證的 [Origin OLE 編輯橋接](docs/origin-bridge.md)：從簡報抽出 OLE、在 Windows VM 用 Origin 編輯、再成對寫回，全程不需要 Windows PowerPoint。
 
+## 系統需求與依賴安裝 (Prerequisites & Dependencies)
+
+SlideBridge 採**極致輕量、零多餘依賴**設計。進行圖表修復時，**不需要 `pip install` 任何 Python 第三方套件**。
+
+### 1. 必備基礎環境（所有修復功能）
+
+| 項目 | 需求版本 | 說明與安裝指令 |
+| --- | --- | --- |
+| **作業系統** | macOS 12+ | 原生支援 Apple Silicon (M 系列) 與 Intel Mac |
+| **Python** | 3.10+ | 系統內建或 Homebrew 安裝均可；**純標準函式庫，零 pip 第三方依賴** |
+| **resvg** | 最新版 | 純 CLI 靜音向量渲染引擎（**必裝**）：<br>`brew install resvg` |
+| **emf2svg-conv** | 專案內建 | 修補版 EMF 轉換工具，**專案已內建於 `bin/emf2svg-conv`**，免手動安裝 |
+
+> [!TIP]
+> 安裝完 `resvg` 後，隨時可執行診斷指令確認本機環境狀態：
+> ```sh
+> python3 -m slidebridge doctor
+> ```
+
+### 2. 進階功能需求（選配）
+
+- **在 Mac 上一鍵編輯 Origin 圖表（跨機雙向橋接）**：
+  - **Microsoft PowerPoint for Mac**
+  - **Parallels Desktop**（目前唯一支援免 guest 帳密跨機調用之虛擬機引擎）
+  - **Windows 虛擬機**：已安裝 Origin / OriginPro（支援 Origin 9.5、2021 等各版本），並已啟用與 Mac 的家目錄共享（`\\Mac\Home`）
+  - **Windows Helper**：`dist/origin-bridge.exe`（**專案已預先編譯**，無需手動構建）
+  - **macOS 權限**：首次在 PowerPoint 觸發時，需在「系統設定 → 隱私權與安全性」允許「自動化」與「輔助使用」權限。
+
+### 3. 開發者重新編譯工具（僅限需修改底層 C++/Swift 原始碼時）
+
+- **重編 macOS SwiftUI App**：Xcode Command Line Tools (`xcode-select --install`)，執行 `bash scripts/build_mac_app.sh`
+- **重編 Windows Helper (`origin-bridge.exe`)**：`brew install mingw-w64`，執行 `bash scripts/build_origin_bridge.sh`
+- **重編修補版 `emf2svg-conv`**：`brew install cmake libpng`，執行 `bash scripts/build_patched_emf2svg.sh`
+
+---
+
 ## 三種用法
 
 ### 1. macOS 原生 App（`dist/SlideBridge.app`）
