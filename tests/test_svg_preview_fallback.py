@@ -45,6 +45,15 @@ class SvgPreviewFallbackTests(unittest.TestCase):
         self.assertIn("resvg", run.call_args.args[0][0])
         self.assertTrue((self.session / "preview_from_svg.png").is_file())
 
+    def test_resvg_success_bypasses_png_white_to_transparent(self):
+        def render(command, **_kwargs):
+            Path(command[2]).write_bytes(minimal_png(20, 20, b"resvg"))
+
+        with patch("slidebridge.bridge.png_white_to_transparent") as mock_white_to_trans:
+            report, run = self._run(render)
+            self.assertEqual(report["preview_source"], str(self.session / "preview_from_svg.png"))
+            mock_white_to_trans.assert_not_called()
+
     def test_resvg_invalid_output_falls_back_to_manual_preview(self):
         manual = minimal_png(30, 30, b"manual")
         (self.session / "preview.png").write_bytes(manual)

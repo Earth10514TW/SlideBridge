@@ -340,6 +340,7 @@ class OriginHost final : public IOleClientSite,
   OriginHost& operator=(const OriginHost&) = delete;
 
   ~OriginHost() {
+    QuitOriginApp();
     ReleaseCachedApp();
     ReleaseObject();
     if (storage_) {
@@ -467,95 +468,103 @@ class OriginHost final : public IOleClientSite,
     return hr;
   }
 
-  // Drives Origin's internal expGraph command via COM Automation
-  // to export the active graph window as preview.png into the session folder.
-  bool AutoExportOriginGraph(const std::wstring& sessionDir) {
-    if (sessionDir.empty()) {
-      return false;
+  bool ConnectOriginApp() {
+    if (cachedApp_) {
+      return true;
     }
 
-    IDispatch* pApp = cachedApp_;
+    const wchar_t* const kAppProgIds[] = {
+        L"Origin.Application",
+        L"Origin.ApplicationSI"
+    };
 
-    // Connect to an active, running Origin instance from the ROT.
-    if (!pApp) {
-      const wchar_t* const kAppProgIds[] = {
-          L"Origin.Application",
-          L"Origin.ApplicationSI"
-      };
-
-      for (const wchar_t* progId : kAppProgIds) {
-        CLSID clsidApp{};
-        if (GetCachedCLSIDFromProgID(progId, &clsidApp)) {
-          IUnknown* pUnk = nullptr;
-          if (SUCCEEDED(GetActiveObject(clsidApp, nullptr, &pUnk)) && pUnk) {
-            HRESULT hr = pUnk->QueryInterface(IID_IDispatch, reinterpret_cast<void**>(&pApp));
-            pUnk->Release();
-            if (SUCCEEDED(hr) && pApp) {
-              Log(std::wstring(L"AutoExport: Attached to active Origin instance via ") + progId);
-              cachedApp_ = pApp;
-              break;
-            }
+    for (const wchar_t* progId : kAppProgIds) {
+      CLSID clsidApp{};
+      if (GetCachedCLSIDFromProgID(progId, &clsidApp)) {
+        IUnknown* pUnk = nullptr;
+        if (SUCCEEDED(GetActiveObject(clsidApp, nullptr, &pUnk)) && pUnk) {
+          IDispatch* pApp = nullptr;
+          HRESULT hr = pUnk->QueryInterface(IID_IDispatch, reinterpret_cast<void**>(&pApp));
+          pUnk->Release();
+          if (SUCCEEDED(hr) && pApp) {
+            Log(std::wstring(L"Connected to active Origin instance via ") + progId);
+            cachedApp_ = pApp;
+            break;
           }
         }
       }
     }
 
-    // Fallback: connect to Single-Instance Origin via CoCreateInstance
-    if (!pApp) {
+    if (!cachedApp_) {
       CLSID clsidApp{};
       if (GetCachedCLSIDFromProgID(L"Origin.ApplicationSI", &clsidApp)) {
+        IDispatch* pApp = nullptr;
         HRESULT hr = CoCreateInstance(clsidApp, nullptr, CLSCTX_LOCAL_SERVER, IID_IDispatch,
                                       reinterpret_cast<void**>(&pApp));
         if (SUCCEEDED(hr) && pApp) {
-          Log(L"AutoExport: Attached to Origin via ApplicationSI CoCreateInstance");
+          Log(L"Connected to Origin via ApplicationSI CoCreateInstance");
           cachedApp_ = pApp;
         }
       }
     }
 
-    if (!pApp) {
-      Log(L"AutoExport: No active Origin COM automation server found; using high-fidelity OLE preview.");
+    if (!cachedApp_) {
       return false;
     }
 
-    DISPID dispidExecute = cachedDispidExecute_;
-    if (dispidExecute == DISPID_UNKNOWN) {
+    if (cachedDispidExecute_ == DISPID_UNKNOWN) {
       OLECHAR* memberName = const_cast<OLECHAR*>(L"Execute");
-      HRESULT hr = pApp->GetIDsOfNames(IID_NULL, &memberName, 1, LOCALE_USER_DEFAULT,
-                                       &dispidExecute);
+      HRESULT hr = cachedApp_->GetIDsOfNames(IID_NULL, &memberName, 1, LOCALE_USER_DEFAULT,
+                                             &cachedDispidExecute_);
       if (FAILED(hr)) {
         LogHr(L"GetIDsOfNames(Execute)", hr);
         ReleaseCachedApp();
         return false;
       }
-      cachedDispidExecute_ = dispidExecute;
+    }
+    return true;
+  }
+
+  void ExecuteLabTalk(const std::wstring& cmd) {
+    if (!ConnectOriginApp()) return;
+    if (!cachedApp_ || cachedDispidExecute_ == DISPID_UNKNOWN) return;
+
+    BSTR bstr = SysAllocString(cmd.c_str());
+    if (!bstr) return;
+    VARIANT arg;
+    VariantInit(&arg);
+    arg.vt = VT_BSTR;
+    arg.bstrVal = bstr;
+
+    DISPPARAMS params{};
+    params.rgvarg = &arg;
+    params.cArgs = 1;
+    params.cNamedArgs = 0;
+
+    VARIANT varResult;
+    VariantInit(&varResult);
+    EXCEPINFO excepInfo{};
+    UINT argErr = 0;
+
+    cachedApp_->Invoke(cachedDispidExecute_, IID_NULL, LOCALE_USER_DEFAULT,
+                       DISPATCH_METHOD, &params, &varResult, &excepInfo, &argErr);
+
+    VariantClear(&arg);
+    VariantClear(&varResult);
+    SysFreeString(bstr);
+  }
+
+  // Drives Origin's internal expGraph command via COM Automation
+  // to export the active graph window into the session folder.
+  bool AutoExportOriginGraph(const std::wstring& sessionDir) {
+    if (sessionDir.empty()) {
+      return false;
     }
 
-    auto runCmd = [&](const std::wstring& cmd) {
-      BSTR bstr = SysAllocString(cmd.c_str());
-      if (!bstr) return;
-      VARIANT arg;
-      VariantInit(&arg);
-      arg.vt = VT_BSTR;
-      arg.bstrVal = bstr;
-
-      DISPPARAMS params{};
-      params.rgvarg = &arg;
-      params.cArgs = 1;
-      params.cNamedArgs = 0;
-
-      VARIANT varResult;
-      VariantInit(&varResult);
-      EXCEPINFO excepInfo{};
-      UINT argErr = 0;
-
-      pApp->Invoke(dispidExecute, IID_NULL, LOCALE_USER_DEFAULT,
-                   DISPATCH_METHOD, &params, &varResult, &excepInfo, &argErr);
-
-      VariantClear(&arg);
-      VariantClear(&varResult);
-      SysFreeString(bstr);
-    };
+    if (!ConnectOriginApp()) {
+      Log(L"AutoExport: No active Origin COM automation server found; using high-fidelity OLE preview.");
+      return false;
+    }
 
     std::wstring sessionDirFwd = sessionDir;
     for (auto& ch : sessionDirFwd) {
@@ -563,32 +572,86 @@ class OriginHost final : public IOleClientSite,
     }
 
     // Commit in-memory chart edits inside Origin
-    runCmd(L"doc -s;");
+    ExecuteLabTalk(L"doc -s;");
 
-    // 1. Primary command: expGraph type:=png (proven to work reliably in Origin OLE)
-    runCmd(L"expGraph type:=png filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace;");
+    // 1. Primary command: expGraph type:=svg (high-fidelity vector preview with natural transparency)
+    ExecuteLabTalk(L"expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace;");
+    if (!FileExists(sessionDir + L"\\preview.svg")) {
+      ExecuteLabTalk(L"doc -e P { expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace; };");
+    }
+
+    // 2. Also export PNG for in-helper window canvas display and fallback
+    ExecuteLabTalk(L"expGraph type:=png filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace;");
     if (!FileExists(sessionDir + L"\\preview.png")) {
-      runCmd(L"doc -e P { expGraph type:=png filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace; };");
+      ExecuteLabTalk(L"doc -e P { expGraph type:=png filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace; };");
     }
 
-    std::wstring previewPng = sessionDir + L"\\preview.png";
-    if (FileExists(previewPng)) {
-      Log(L"Origin COM Auto-Export succeeded: " + previewPng);
+    bool hasSvg = FileExists(sessionDir + L"\\preview.svg");
+    bool hasPng = FileExists(sessionDir + L"\\preview.png");
+
+    if (hasSvg || hasPng) {
+      std::wstring msg = L"Origin COM Auto-Export succeeded: ";
+      if (hasSvg) msg += L"preview.svg ";
+      if (hasPng) msg += L"preview.png";
+      Log(msg);
       return true;
     }
 
-    // 2. Secondary fallback command: expGraph type:=svg (only run if PNG export didn't yield preview.png)
-    Log(L"AutoExport: preview.png not found after PNG export, attempting SVG fallback...");
-    runCmd(L"expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace;");
-
-    std::wstring previewSvg = sessionDir + L"\\preview.svg";
-    if (FileExists(previewSvg)) {
-      Log(L"Origin COM Auto-Export SVG fallback succeeded: " + previewSvg);
-      return true;
-    }
-
-    Log(L"Origin COM Execute returned S_OK, but neither preview.png nor preview.svg was found.");
+    Log(L"Origin COM Execute returned S_OK, but neither preview.svg nor preview.png was found.");
     return false;
+  }
+
+  static BOOL CALLBACK CloseOriginWindowsEnumProc(HWND hwnd, LPARAM lParam) {
+    (void)lParam;
+    if (!IsWindow(hwnd) || !IsWindowVisible(hwnd)) {
+      return TRUE;
+    }
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == 0 || pid == GetCurrentProcessId()) {
+      return TRUE;
+    }
+
+    wchar_t clsName[256] = {};
+    GetClassNameW(hwnd, clsName, 256);
+    wchar_t title[256] = {};
+    GetWindowTextW(hwnd, title, 256);
+
+    std::wstring cls(clsName);
+    std::wstring winTitle(title);
+
+    bool isOrigin = false;
+    if (cls.rfind(L"Origin", 0) == 0 || cls.find(L"Origin") != std::wstring::npos) {
+      isOrigin = true;
+    } else if (winTitle.find(L"OriginPro") != std::wstring::npos || winTitle.find(L"Origin ") != std::wstring::npos) {
+      isOrigin = true;
+    }
+
+    if (isOrigin) {
+      Log(std::wstring(L"CloseOriginWindows: Closing lingering Origin window [") + cls + L"] \"" + winTitle + L"\"");
+      PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    }
+    return TRUE;
+  }
+
+  void CloseOriginWindows() {
+    EnumWindows(&OriginHost::CloseOriginWindowsEnumProc, reinterpret_cast<LPARAM>(this));
+  }
+
+  void QuitOriginApp() {
+    if (originQuit_) {
+      return;
+    }
+    originQuit_ = true;
+    Log(L"QuitOriginApp: Shutting down Origin application...");
+    // 1. Tell Origin to exit cleanly via LabTalk without saving prompts
+    if (ConnectOriginApp()) {
+      ExecuteLabTalk(L"doc -s; exit;");
+      ReleaseCachedApp();
+    }
+    // 2. Also close any lingering empty Origin main windows
+    CloseOriginWindows();
   }
 
   // A preview the user exported from Origin into the session folder.
@@ -659,7 +722,8 @@ class OriginHost final : public IOleClientSite,
         autoExported = AutoExportOriginGraph(sessionDir);
       }
 
-      if (!outputBasePath_.empty()) {
+      // Only run expensive OleDraw + GDI+ 300 DPI rasterization if COM auto-export failed
+      if (!autoExported && !outputBasePath_.empty()) {
         std::wstring emfPath, pngPath;
         HRESULT exportHr = ExportPreview(outputBasePath_, &emfPath, &pngPath);
         if (SUCCEEDED(exportHr)) {
@@ -669,14 +733,14 @@ class OriginHost final : public IOleClientSite,
             if (!details.empty()) details += L", ";
             details += GetFilename(pngPath);
           }
-          statusMsg += L" Exported OLE previews: " + details;
+          statusMsg += L" Exported OLE fallback previews: " + details;
         } else {
-          statusMsg += L" (Warning: preview export failed)";
+          statusMsg += L" (Warning: fallback preview export failed)";
         }
       }
 
       if (autoExported) {
-        statusMsg += L" Auto-exported Origin graph: preview.png";
+        statusMsg += L" Auto-exported Origin graph preview.";
       } else {
         const std::wstring manualPreview = ManualPreviewPath();
         if (!manualPreview.empty()) {
@@ -929,6 +993,7 @@ class OriginHost final : public IOleClientSite,
 
   HRESULT CloseAfterSave() {
     if (!object_) {
+      QuitOriginApp();
       return S_FALSE;
     }
     if (!explicitlySaved_) {
@@ -937,23 +1002,24 @@ class OriginHost final : public IOleClientSite,
     HRESULT hr = object_->Close(OLECLOSE_NOSAVE);
     if (FAILED(hr)) {
       LogHr(L"IOleObject::Close(OLECLOSE_NOSAVE)", hr);
-      return hr;
     }
     closed_ = true;
+    QuitOriginApp();
     SetStatus(L"Origin closed after a successful save.");
     return S_OK;
   }
 
   HRESULT DiscardObject() {
     if (!object_) {
+      QuitOriginApp();
       return S_FALSE;
     }
     HRESULT hr = object_->Close(OLECLOSE_NOSAVE);
     if (FAILED(hr)) {
       LogHr(L"IOleObject::Close(OLECLOSE_NOSAVE) on discard", hr);
-      return hr;
     }
     closed_ = true;
+    QuitOriginApp();
     SetStatus(L"Discarded changes; the input remains unchanged.");
     return S_OK;
   }
@@ -1173,6 +1239,7 @@ class OriginHost final : public IOleClientSite,
   bool closed_ = false;
   bool saving_ = false;
   bool persistencePoisoned_ = false;
+  bool originQuit_ = false;
   std::wstring outputBasePath_;
   IDispatch* cachedApp_ = nullptr;
   DISPID cachedDispidExecute_ = DISPID_UNKNOWN;
@@ -1192,6 +1259,7 @@ class EditApp final {
 
   ~EditApp() {
     if (host_) {
+      host_->QuitOriginApp();
       host_->ReleaseObject();
       host_->Release();
       host_ = nullptr;

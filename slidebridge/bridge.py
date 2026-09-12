@@ -596,6 +596,7 @@ def writeback_ole(
 
         # Locate preview image (ENFORCE PAIRED WRITEBACK)
         chosen_preview_path: Path | None = None
+        is_transparent_svg = False
         if preview_path is not None:
             chosen_preview_path = Path(_path_string(preview_path))
             if not chosen_preview_path.is_file():
@@ -605,6 +606,8 @@ def writeback_ole(
             preview_svg = session_path / "preview.svg"
             if preview_svg.is_file():
                 chosen_preview_path = _render_svg_preview(preview_svg, session_path)
+                if chosen_preview_path is not None:
+                    is_transparent_svg = True
 
             if chosen_preview_path is None:
                 candidates = ["preview.png", "preview.emf", "edited.png", "edited.emf"]
@@ -621,7 +624,7 @@ def writeback_ole(
 
         new_preview_bytes = chosen_preview_path.read_bytes()
         preview_format = _validate_preview(new_preview_bytes, chosen_preview_path)
-        if preview_format == "png":
+        if preview_format == "png" and not is_transparent_svg:
             new_preview_bytes = png_white_to_transparent(new_preview_bytes)
 
         # Resolve preview members in presentation
