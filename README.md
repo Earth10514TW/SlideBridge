@@ -20,16 +20,19 @@ Finder 右鍵快速動作已移除：Automator 沙箱會擋下 shell 呼叫，�
 
 ### 3. 指令列
 
-需要 Python 3.10+；修復需要 [Inkscape](https://inkscape.org/release/)，EMF 建議加裝 libemf2svg（先轉 SVG 再交給 Inkscape，避開部分 macOS Inkscape 版本的 EMF 匯入崩潰）。專案內已修補的 `bin/emf2svg-conv` 會被優先採用。
+需要 Python 3.10+；修復推薦安裝純命令列渲染器 [resvg](https://github.com/linebender/resvg)（無 GUI、背景靜音、速度快 5~10 倍且原生支援透明背景）。亦支援傳統 [Inkscape](https://inkscape.org/release/) 作為相容後備。EMF 建議加裝 libemf2svg（先轉 SVG 再交給 resvg/Inkscape 渲染）。專案內已修補的 `bin/emf2svg-conv` 會被優先採用。
 
 ```sh
-brew install --cask inkscape
+brew install resvg           # 推薦：純 CLI 靜音渲染器
 brew install libemf2svg
+# 或安裝 Inkscape 作為後備：
+# brew install --cask inkscape
 
 python3 -m slidebridge scan input.pptx --json
-python3 -m slidebridge fix input.pptx                      # 預設輸出 input_fixed.pptx
+python3 -m slidebridge fix input.pptx                      # 預設輸出 input_fixed.pptx，自動選用 resvg
 python3 -m slidebridge fix input.pptx -o out.pptx --dpi 600
-python3 -m slidebridge fix input.pptx --inkscape /path/to/inkscape
+python3 -m slidebridge fix input.pptx --renderer /path/to/resvg
+python3 -m slidebridge fix input.pptx --inkscape /path/to/inkscape  # 相容舊版參數
 python3 -m slidebridge doctor                              # 環境預檢
 ```
 

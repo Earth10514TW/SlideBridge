@@ -19,9 +19,23 @@ _INKSCAPE_CANDIDATES = (
     "/opt/local/bin/inkscape",
 )
 
+_RESVG_CANDIDATES = (
+    "/opt/homebrew/bin/resvg",
+    "/usr/local/bin/resvg",
+    "/opt/local/bin/resvg",
+)
+
+
+def find_resvg():
+    return find_executable("resvg", absolute_candidates=_RESVG_CANDIDATES)
+
 
 def find_inkscape():
     return find_executable("inkscape", absolute_candidates=_INKSCAPE_CANDIDATES) or "inkscape"
+
+
+def find_svg_renderer():
+    return find_resvg() or find_inkscape()
 
 
 def main(argv=None):
@@ -105,7 +119,18 @@ def main(argv=None):
     fix.add_argument("input", type=Path)
     fix.add_argument("-o", "--output", type=Path)
     fix.add_argument("--dpi", type=int, default=300)
-    fix.add_argument("--inkscape", default=None, help="Path to Inkscape executable")
+    fix.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        default=None,
+        dest="concurrency",
+        help="Number of concurrent conversion workers (default: min(cpu_count, 8))",
+    )
+    fix.add_argument("--renderer", default=None, help="Path to SVG renderer executable (prefers resvg, falls back to inkscape)")
+    fix.add_argument("--inkscape", default=None, help="Path to Inkscape executable (legacy flag)")
+    fix.add_argument("--transparent", dest="transparent", action="store_true", default=True, help="Force transparent background for chart boundaries (default: true)")
+    fix.add_argument("--no-transparent", dest="transparent", action="store_false", help="Do not force transparent background")
     fix.add_argument("--json", action="store_true")
     fix.add_argument("--preview", action="append", default=[], metavar="MEMBER=PNG",
                      help="Use an exact Windows PNG export for a package EMF/WMF member; repeatable")
@@ -161,8 +186,16 @@ def main(argv=None):
                 if not separator or not member or not filename or member in previews:
                     raise ValueError("--preview requires a unique package MEMBER=PNG path")
                 previews[member] = filename
-            report = repair(args.input, output, inkscape=args.inkscape or find_inkscape(),
-                            dpi=args.dpi, reference_previews=previews)
+            report = repair(
+                args.input,
+                output,
+                inkscape=args.inkscape,
+                renderer=args.renderer,
+                transparent=args.transparent,
+                dpi=args.dpi,
+                reference_previews=previews,
+                concurrency=args.concurrency,
+            )
         if args.json:
             print(json.dumps(report, ensure_ascii=False, indent=2))
         elif args.command == "prepare-ole":

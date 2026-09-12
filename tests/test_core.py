@@ -7,7 +7,7 @@ import subprocess
 import zipfile
 import xml.etree.ElementTree as ET
 
-from slidebridge.core import scan, repair, SlideBridgeError
+from slidebridge.core import scan, repair, SlideBridgeError, png_white_to_transparent
 from slidebridge.cli import main
 
 R = 'http://schemas.openxmlformats.org/package/2006/relationships'
@@ -128,8 +128,9 @@ class CoreTests(unittest.TestCase):
             with patch('slidebridge.core.subprocess.run', side_effect=backend):
                 repair(self.source, self.output)
         self.assertEqual(len(calls), 3)
-        self.assertTrue(calls[1][1].endswith('.svg'))
-        self.assertIn('--export-width=4096', calls[1])
+        svg_calls = [c for c in calls if len(c) > 1 and c[1].endswith('.svg')]
+        self.assertEqual(len(svg_calls), 1)
+        self.assertIn('--export-width=4096', svg_calls[0])
 
     def test_vml_only_preview(self):
         with zipfile.ZipFile(self.source) as z:
@@ -176,5 +177,125 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(main(['scan', str(self.source.parent / 'missing.pptx')]), 1)
 
 
+    @patch('slidebridge.core.subprocess.run', side_effect=renderer)
+    def test_concurrent_repair_matches_sequential(self, run):
+        out_seq = self.source.parent / 'output_seq.pptx'
+        out_par = self.source.parent / 'output_par.pptx'
+        rep_seq = repair(self.source, out_seq, concurrency=1)
+        rep_par = repair(self.source, out_par, concurrency=4)
+        self.assertEqual(len(rep_seq['converted']), len(rep_par['converted']))
+        self.assertTrue(out_seq.is_file())
+        self.assertTrue(out_par.is_file())
+        with zipfile.ZipFile(out_seq) as z1, zipfile.ZipFile(out_par) as z2:
+            self.assertEqual(set(z1.namelist()), set(z2.namelist()))
+            for name in z1.namelist():
+                self.assertEqual(z1.read(name), z2.read(name))
+
+    def test_concurrent_repair_failure_cleans_up(self):
+        calls = []
+        def fail_second(command, **kwargs):
+            calls.append(command)
+            if len(calls) == 1:
+                return renderer(command, **kwargs)
+            raise subprocess.CalledProcessError(1, command)
+
+        with patch('slidebridge.core.subprocess.run', side_effect=fail_second):
+            with self.assertRaises(SlideBridgeError):
+                repair(self.source, self.output, concurrency=4)
+        self.assertFalse(self.output.exists())
+
+    def test_resvg_preferred_for_svg_when_available(self):
+        recorded_calls = []
+
+        def fake_which(cmd):
+            if "emf2svg" in cmd:
+                return "/mock/bin/emf2svg-conv"
+            if "resvg" in cmd:
+                return "/mock/bin/resvg"
+            return None
+
+        def fake_run(cmd, **kwargs):
+            recorded_calls.append(list(cmd))
+            if "emf2svg-conv" in cmd[0]:
+                out_svg = cmd[cmd.index("-o") + 1]
+                Path(out_svg).write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"></svg>')
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            elif "resvg" in cmd[0]:
+                out_png = cmd[2]
+                Path(out_png).write_bytes(PNG)
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            elif "inkscape" in cmd[0]:
+                target = next(str(x).split('=', 1)[1] for x in cmd if str(x).startswith('--export-filename='))
+                Path(target).write_bytes(PNG)
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with patch('slidebridge.core.shutil.which', side_effect=fake_which), \
+             patch('slidebridge.core.subprocess.run', side_effect=fake_run):
+            repair(self.source, self.output)
+
+        resvg_invocations = [c for c in recorded_calls if c and "resvg" in c[0]]
+        inkscape_invocations = [c for c in recorded_calls if c and "inkscape" in c[0]]
+        # Image1 (EMF) should go through emf2svg-conv and then resvg
+        self.assertTrue(any("intermediate.svg" in c[1] and "--dpi" in c for c in resvg_invocations))
+        # Image2 (WMF) cannot use resvg, must fallback to inkscape
+        self.assertTrue(any(c[1].lower().endswith(".wmf") for c in inkscape_invocations))
+
+    def test_resvg_obeys_4096_width_limit(self):
+        recorded_calls = []
+
+        def fake_which(cmd):
+            if "emf2svg" in cmd:
+                return "/mock/bin/emf2svg-conv"
+            if "resvg" in cmd:
+                return "/mock/bin/resvg"
+            return None
+
+        def fake_run(cmd, **kwargs):
+            recorded_calls.append(list(cmd))
+            if "emf2svg-conv" in cmd[0]:
+                out_svg = cmd[cmd.index("-o") + 1]
+                # viewBox 2000x1000 at 300 DPI: 2000 * 300 / 96 = 6250 > 4096 -> width 4096
+                Path(out_svg).write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2000 1000"></svg>')
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            elif "resvg" in cmd[0]:
+                out_png = cmd[2]
+                Path(out_png).write_bytes(PNG)
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            elif "inkscape" in cmd[0]:
+                target = next(str(x).split('=', 1)[1] for x in cmd if str(x).startswith('--export-filename='))
+                Path(target).write_bytes(PNG)
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with patch('slidebridge.core.shutil.which', side_effect=fake_which), \
+             patch('slidebridge.core.subprocess.run', side_effect=fake_run):
+            repair(self.source, self.output)
+
+        resvg_invocations = [c for c in recorded_calls if c and "resvg" in c[0]]
+        self.assertTrue(any("--width" in c and "4096" in c for c in resvg_invocations))
+
+    def test_png_white_to_transparent_integration(self):
+        rgba_sample = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+        result = png_white_to_transparent(rgba_sample)
+        self.assertEqual(len(result), len(rgba_sample))
+
+    def test_cli_renderer_and_transparency_flags(self):
+        recorded_calls = []
+
+        def fake_run(cmd, **kwargs):
+            recorded_calls.append(list(cmd))
+            target = next(str(x).split('=', 1)[1] for x in cmd if str(x).startswith('--export-filename='))
+            Path(target).write_bytes(PNG)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        out = self.source.parent / "cli_out.pptx"
+        with patch('slidebridge.core.subprocess.run', side_effect=fake_run):
+            ret = main(['fix', str(self.source), '-o', str(out), '--renderer', '/custom/renderer', '--no-transparent'])
+            self.assertEqual(ret or 0, 0)
+        self.assertTrue(out.is_file())
+
+
 if __name__ == '__main__':
     unittest.main()
+

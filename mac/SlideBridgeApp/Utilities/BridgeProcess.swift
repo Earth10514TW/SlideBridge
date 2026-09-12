@@ -23,18 +23,43 @@ public enum BridgeError: LocalizedError {
 public actor BridgeProcess {
     public static let shared = BridgeProcess()
 
+    private var cachedPythonPath: String?
+    private var cachedProjectRoot: URL?
+
     private init() {}
 
     public func resolvePythonPath() -> String? {
+        if let cached = cachedPythonPath {
+            return cached
+        }
+
+        let fm = FileManager.default
+
+        // 1. Environment variable
+        if let env = ProcessInfo.processInfo.environment["SLIDEBRIDGE_PYTHON"], !env.isEmpty, fm.isExecutableFile(atPath: env) {
+            cachedPythonPath = env
+            return env
+        }
+
+        // 2. ~/.slidebridge/python-path (written by installer or python_env.sh)
+        let configPath = fm.homeDirectoryForCurrentUser.appendingPathComponent(".slidebridge/python-path")
+        if let data = try? Data(contentsOf: configPath),
+           let str = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !str.isEmpty, fm.isExecutableFile(atPath: str) {
+            cachedPythonPath = str
+            return str
+        }
+
+        // 3. Known candidate locations
         let candidates = [
             "/usr/local/bin/python3",
             "/opt/homebrew/bin/python3",
             "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
             "/usr/bin/python3"
         ]
-        let fm = FileManager.default
         for path in candidates {
             if fm.isExecutableFile(atPath: path) {
+                cachedPythonPath = path
                 return path
             }
         }
@@ -42,12 +67,17 @@ public actor BridgeProcess {
     }
 
     public func resolveProjectRoot() -> URL? {
+        if let cached = cachedProjectRoot {
+            return cached
+        }
+
         let fm = FileManager.default
 
         // 1. Environment variable
         if let env = ProcessInfo.processInfo.environment["SLIDEBRIDGE_PROJECT_ROOT"], !env.isEmpty {
             let url = URL(fileURLWithPath: env)
             if fm.fileExists(atPath: url.path) {
+                cachedProjectRoot = url
                 return url
             }
         }
@@ -57,7 +87,9 @@ public actor BridgeProcess {
         if let data = try? Data(contentsOf: configPath),
            let str = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
            !str.isEmpty, fm.fileExists(atPath: str) {
-            return URL(fileURLWithPath: str)
+            let url = URL(fileURLWithPath: str)
+            cachedProjectRoot = url
+            return url
         }
 
         // 3. App bundle ancestor directories
@@ -66,6 +98,7 @@ public actor BridgeProcess {
             current = current.deletingLastPathComponent()
             let marker = current.appendingPathComponent("slidebridge/core.py")
             if fm.fileExists(atPath: marker.path) {
+                cachedProjectRoot = current
                 return current
             }
         }
@@ -73,6 +106,7 @@ public actor BridgeProcess {
         // 4. Current working directory
         let cwd = URL(fileURLWithPath: fm.currentDirectoryPath)
         if fm.fileExists(atPath: cwd.appendingPathComponent("slidebridge/core.py").path) {
+            cachedProjectRoot = cwd
             return cwd
         }
 

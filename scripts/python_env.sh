@@ -34,10 +34,29 @@ python_candidates() {
 
 pick_python() {
   local candidate
+  local cache_file="${HOME}/.slidebridge/python-path"
+
+  # Fast-path 1: Explicit SLIDEBRIDGE_PYTHON override
+  if [ -n "${SLIDEBRIDGE_PYTHON:-}" ] && [ -x "${SLIDEBRIDGE_PYTHON}" ]; then
+    printf '%s\n' "${SLIDEBRIDGE_PYTHON}"
+    return 0
+  fi
+
+  # Fast-path 2: Cached python path (avoids spawning probing subshells)
+  if [ -f "${cache_file}" ]; then
+    candidate="$(cat "${cache_file}" 2>/dev/null || true)"
+    if [ -n "${candidate}" ] && [ -x "${candidate}" ]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  fi
+
   while IFS= read -r candidate; do
     [ -n "${candidate}" ] || continue
     [ -x "${candidate}" ] || continue
     if "${candidate}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+      mkdir -p "${HOME}/.slidebridge" 2>/dev/null || true
+      printf '%s\n' "${candidate}" > "${cache_file}" 2>/dev/null || true
       printf '%s\n' "${candidate}"
       return 0
     fi

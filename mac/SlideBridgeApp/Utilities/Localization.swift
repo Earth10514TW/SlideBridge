@@ -274,8 +274,8 @@ public class LanguageManager: ObservableObject {
             return isEn ? "600 DPI (Ultra High Res)" : "600 DPI (極致高解析度)"
         case .fixingMessage:
             return isEn
-                ? "Rendering high-res charts via patched engine & Inkscape, updating XML relationships..."
-                : "正在透過修補版引擎與 Inkscape 渲染高畫質圖表，並重寫 XML 關係..."
+                ? "Rendering high-res charts via patched engine & resvg/Inkscape, updating XML relationships..."
+                : "正在透過修補版引擎與 resvg/Inkscape 渲染高畫質圖表，並重寫 XML 關係..."
         case .startRepairButton:
             return isEn ? "Start High-Res Repair" : "開始高畫質修復"
         case .changeFileButton:
@@ -382,8 +382,8 @@ public class LanguageManager: ObservableObject {
             return isEn ? "Diagnostics & settings" : "系統診斷與設定"
         case .doctorSubtitle:
             return isEn
-                ? "Verify local Python, PowerPoint, Inkscape, Parallels VM, and integration scripts readiness."
-                : "檢查本機 Python、PowerPoint、Inkscape、Parallels 虛擬機以及整合腳本的就緒狀態。"
+                ? "Verify local Python, PowerPoint, resvg/Inkscape, Parallels VM, and integration scripts readiness."
+                : "檢查本機 Python、PowerPoint、resvg/Inkscape、Parallels 虛擬機以及整合腳本的就緒狀態。"
         case .refreshButton:
             return isEn ? "Refresh" : "重新整理"
         case .envReady:

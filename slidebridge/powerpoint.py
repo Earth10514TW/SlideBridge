@@ -64,8 +64,11 @@ def _run_applescript(script: str) -> str:
         raise SlideBridgeError(f"AppleScript error: {err}") from exc
 
 
-def get_active_powerpoint_state() -> dict:
+def get_active_powerpoint_state(save_first: bool = False) -> dict:
     """Query Microsoft PowerPoint on Mac for the active presentation and selection.
+
+    If save_first is True, saves the active presentation within the same AppleScript
+    transaction, eliminating extra process dispatch latency.
 
     Returns dict with keys:
       - presentation_path: str
@@ -74,7 +77,8 @@ def get_active_powerpoint_state() -> dict:
       - shape_name: str or None
       - shape_bounds: tuple (left, top, width, height) in points or None
     """
-    script = """
+    save_stmt = "save active presentation" if save_first else ""
+    script = f"""
     tell application "Microsoft PowerPoint"
         if not running then
             return "ERROR:NOT_RUNNING"
@@ -82,6 +86,7 @@ def get_active_powerpoint_state() -> dict:
         if (count of presentations) is 0 then
             return "ERROR:NO_PRESENTATION"
         end if
+        {save_stmt}
         set pres to active presentation
         set presPath to full name of pres as text
         set w to active window
@@ -323,12 +328,12 @@ def edit_active_presentation(
     allow_unchanged: bool = False,
 ) -> dict:
     """Full end-to-end workflow: detect selection, save, edit in VM, writeback, and reload."""
-    # 1. Query PowerPoint
-    state = get_active_powerpoint_state()
+    # 1. Query PowerPoint (atomic save + query in one transaction)
+    state = get_active_powerpoint_state(save_first=True)
     pptx_path = state["presentation_path"]
     slide_index = state["slide_index"]
 
-    # 2. Auto-save in PowerPoint so presentation on disk is fresh
+    # 2. Auto-save in PowerPoint so presentation on disk is fresh (retains mock hook)
     save_active_presentation()
 
     # 3. Resolve selected shape to OLE member

@@ -8,20 +8,25 @@ only package relationships which point at an EMF or WMF member.
 
 from __future__ import annotations
 
+import concurrent.futures
 import copy
 import math
 import os
 import posixpath
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import urllib.parse
 import zipfile
+import zlib
+from collections import deque
 from pathlib import Path
 from typing import Iterable
 from xml.etree import ElementTree
 
+from .locate import find_executable
 from .svg_cleaner import optimize_emf_svg
 
 
@@ -84,6 +89,16 @@ def _check_archive(path: str) -> zipfile.ZipFile:
     except Exception:
         archive.close()
         raise
+
+
+def _copy_archive_member(
+    archive: zipfile.ZipFile, destination: zipfile.ZipFile, info: zipfile.ZipInfo
+) -> None:
+    """Copy an unchanged member with bounded memory, retaining its metadata."""
+    # ZipFile.open mutates the output ZipInfo as it writes; keep the source
+    # record intact so subsequent reads still use its original CRC and sizes.
+    with archive.open(info) as source, destination.open(copy.copy(info), "w") as target:
+        shutil.copyfileobj(source, target, length=1024 * 1024)
 
 
 def _local_name(tag: str) -> str:
@@ -415,20 +430,402 @@ def _png_content_type(content_types: bytes) -> bytes:
     return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
+_RESVG_CANDIDATES = (
+    "/opt/homebrew/bin/resvg",
+    "/usr/local/bin/resvg",
+    "/opt/local/bin/resvg",
+)
+
+
+def png_white_to_transparent(data: bytes, tolerance: int = 10) -> bytes:
+    """Convert white border background of a PNG image to transparent alpha (RGBA).
+
+    Uses flood fill starting from the four outer image boundaries to make exterior
+    margins transparent while preserving axes, text, plot curves, and enclosed
+    white elements (e.g. data points or text labels).
+    Uses only Python standard library (struct, zlib). Returns unmodified bytes
+    on any unsupported format or decompression failure.
+    """
+    if not data.startswith(_PNG_SIGNATURE):
+        return data
+    try:
+        pos = 8
+        chunks = []
+        width = height = bit_depth = color_type = None
+        idat_data = bytearray()
+
+        while pos < len(data):
+            if pos + 8 > len(data):
+                return data
+            length = struct.unpack(">I", data[pos : pos + 4])[0]
+            ctype = data[pos + 4 : pos + 8]
+            cdata = data[pos + 8 : pos + 8 + length]
+            pos += 12 + length
+
+            if ctype == b"IHDR":
+                width, height, bit_depth, color_type = struct.unpack(">IIBB", cdata[:10])
+                if bit_depth != 8 or color_type not in (2, 6):
+                    return data
+            elif ctype == b"IDAT":
+                idat_data.extend(cdata)
+            elif ctype == b"IEND":
+                break
+            else:
+                chunks.append((ctype, cdata))
+
+        if not idat_data or not width or not height:
+            return data
+
+        raw = zlib.decompress(bytes(idat_data))
+        bpp = 3 if color_type == 2 else 4
+        stride = width * bpp
+        reconstructed = bytearray(height * stride)
+
+        src_pos = 0
+        for y in range(height):
+            if src_pos >= len(raw):
+                return data
+            filter_type = raw[src_pos]
+            src_pos += 1
+            if src_pos + stride > len(raw):
+                return data
+            line = bytearray(raw[src_pos : src_pos + stride])
+            src_pos += stride
+            prior = reconstructed[(y - 1) * stride : y * stride] if y > 0 else None
+
+            if filter_type == 1:
+                for x in range(bpp, stride):
+                    line[x] = (line[x] + line[x - bpp]) & 0xFF
+            elif filter_type == 2:
+                if prior:
+                    for x in range(stride):
+                        line[x] = (line[x] + prior[x]) & 0xFF
+            elif filter_type == 3:
+                for x in range(stride):
+                    left = line[x - bpp] if x >= bpp else 0
+                    up = prior[x] if prior else 0
+                    line[x] = (line[x] + ((left + up) >> 1)) & 0xFF
+            elif filter_type == 4:
+                for x in range(stride):
+                    a = line[x - bpp] if x >= bpp else 0
+                    b = prior[x] if prior else 0
+                    c = prior[x - bpp] if (prior and x >= bpp) else 0
+                    p = a + b - c
+                    pa = abs(p - a)
+                    pb = abs(p - b)
+                    pc = abs(p - c)
+                    pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                    line[x] = (line[x] + pr) & 0xFF
+            reconstructed[y * stride : (y + 1) * stride] = line
+
+        threshold = 255 - tolerance
+        n_pixels = width * height
+        is_bg = bytearray(n_pixels)
+
+        if bpp == 3:
+            for i in range(n_pixels):
+                off = i * 3
+                if reconstructed[off] >= threshold and reconstructed[off + 1] >= threshold and reconstructed[off + 2] >= threshold:
+                    is_bg[i] = 1
+        else:
+            for i in range(n_pixels):
+                off = i * 4
+                if reconstructed[off + 3] == 0 or (reconstructed[off] >= threshold and reconstructed[off + 1] >= threshold and reconstructed[off + 2] >= threshold):
+                    is_bg[i] = 1
+
+        mask = bytearray(n_pixels)
+        queue = deque()
+
+        for x in range(width):
+            if is_bg[x]:
+                mask[x] = 1
+                queue.append(x)
+            bottom_idx = (height - 1) * width + x
+            if is_bg[bottom_idx] and not mask[bottom_idx]:
+                mask[bottom_idx] = 1
+                queue.append(bottom_idx)
+
+        for y in range(height):
+            left_idx = y * width
+            if is_bg[left_idx] and not mask[left_idx]:
+                mask[left_idx] = 1
+                queue.append(left_idx)
+            right_idx = y * width + (width - 1)
+            if is_bg[right_idx] and not mask[right_idx]:
+                mask[right_idx] = 1
+                queue.append(right_idx)
+
+        while queue:
+            curr = queue.popleft()
+            cx = curr % width
+            cy = curr // width
+
+            if cx > 0:
+                n = curr - 1
+                if is_bg[n] and not mask[n]:
+                    mask[n] = 1
+                    queue.append(n)
+            if cx + 1 < width:
+                n = curr + 1
+                if is_bg[n] and not mask[n]:
+                    mask[n] = 1
+                    queue.append(n)
+            if cy > 0:
+                n = curr - width
+                if is_bg[n] and not mask[n]:
+                    mask[n] = 1
+                    queue.append(n)
+            if cy + 1 < height:
+                n = curr + width
+                if is_bg[n] and not mask[n]:
+                    mask[n] = 1
+                    queue.append(n)
+
+        new_raw = bytearray((width * 4 + 1) * height)
+        dest_pos = 0
+        pixel_idx = 0
+
+        for y in range(height):
+            new_raw[dest_pos] = 0
+            dest_pos += 1
+            for x in range(width):
+                if mask[pixel_idx]:
+                    new_raw[dest_pos : dest_pos + 4] = b"\xff\xff\xff\x00"
+                else:
+                    src_off = pixel_idx * bpp
+                    new_raw[dest_pos] = reconstructed[src_off]
+                    new_raw[dest_pos + 1] = reconstructed[src_off + 1]
+                    new_raw[dest_pos + 2] = reconstructed[src_off + 2]
+                    new_raw[dest_pos + 3] = reconstructed[src_off + 3] if bpp == 4 else 255
+                dest_pos += 4
+                pixel_idx += 1
+
+        new_idat = zlib.compress(bytes(new_raw), 6)
+        out = bytearray(b"\x89PNG\r\n\x1a\n")
+        ihdr_payload = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+        out.extend(struct.pack(">I", len(ihdr_payload)))
+        out.extend(b"IHDR")
+        out.extend(ihdr_payload)
+        out.extend(struct.pack(">I", zlib.crc32(b"IHDR" + ihdr_payload)))
+
+        for ctype, cdata in chunks:
+            if ctype in (b"sRGB", b"gAMA", b"pHYs"):
+                out.extend(struct.pack(">I", len(cdata)))
+                out.extend(ctype)
+                out.extend(cdata)
+                out.extend(struct.pack(">I", zlib.crc32(ctype + cdata)))
+
+        out.extend(struct.pack(">I", len(new_idat)))
+        out.extend(b"IDAT")
+        out.extend(new_idat)
+        out.extend(struct.pack(">I", zlib.crc32(b"IDAT" + new_idat)))
+
+        out.extend(struct.pack(">I", 0))
+        out.extend(b"IEND")
+        out.extend(struct.pack(">I", zlib.crc32(b"IEND")))
+        return bytes(out)
+    except Exception:
+        return data
+
+
+def _convert_single_item(
+    idx: int,
+    source_name: str,
+    output_name: str,
+    raw_bytes: bytes,
+    temporary_dir: str,
+    inkscape: str | None,
+    dpi: int | float,
+    project_dir: str,
+    renderer: str | None = None,
+    transparent: bool = True,
+) -> tuple[str, str, bytes, dict]:
+    suffix = posixpath.splitext(source_name)[1].lower() or ".emf"
+    item_dir = os.path.join(temporary_dir, f"media_{idx}")
+    os.makedirs(item_dir, exist_ok=True)
+    source_temp = os.path.join(item_dir, "source" + suffix)
+    output_temp = os.path.join(item_dir, "rendered.png")
+
+    try:
+        with open(source_temp, "wb") as handle:
+            handle.write(raw_bytes)
+
+        # libemf2svg avoids native EMF importer crashes on some macOS builds.
+        # Keep this intermediate private; only the rendered PNG enters PPTX.
+        emf_converter = None
+        if suffix == ".emf":
+            # Prefer the project-local patched binary over the system copy.
+            # Both lookups go through shutil.which so test mocks work.
+            local_bin = (
+                shutil.which(os.path.join(project_dir, "bin", "emf2svg-conv"))
+                or shutil.which(os.path.join(project_dir, "artifacts", "bin", "emf2svg-conv"))
+            )
+            emf_converter = local_bin or shutil.which("emf2svg-conv")
+
+        scale_width = False
+        scale_height = False
+        if emf_converter:
+            svg_temp = os.path.join(item_dir, "intermediate.svg")
+            try:
+                result = subprocess.run(
+                    [emf_converter, "-i", source_temp, "-o", svg_temp],
+                    capture_output=True,
+                    timeout=120,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise RepairError(f"EMF to SVG conversion failed for {source_name}") from exc
+            if result.returncode != 0 or not os.path.isfile(svg_temp):
+                raise RepairError(f"EMF to SVG conversion failed for {source_name}")
+
+            raw_svg = Path(svg_temp).read_text(encoding="utf-8", errors="replace")
+            try:
+                cleaned_svg = optimize_emf_svg(raw_svg)
+                Path(svg_temp).write_text(cleaned_svg, encoding="utf-8")
+                svg_content = cleaned_svg
+            except Exception:
+                svg_content = raw_svg
+
+            try:
+                # Direct in-memory parsing avoids redundant disk re-reads
+                svg_root = ElementTree.fromstring(svg_content)
+                bounds = [float(x) for x in svg_root.get("viewBox", "").replace(",", " ").split()]
+                if len(bounds) != 4:
+                    bounds = [0, 0, float(svg_root.get("width", "0")), float(svg_root.get("height", "0"))]
+                if len(bounds) == 4 and bounds[2] > 0 and bounds[3] > 0:
+                    longest = max(bounds[2:]) * dpi / 96
+                    if longest > 4096:
+                        if bounds[2] >= bounds[3]:
+                            scale_width = True
+                        else:
+                            scale_height = True
+            except (ElementTree.ParseError, ValueError) as exc:
+                raise RepairError(f"Invalid intermediate SVG for {source_name}") from exc
+            source_temp = svg_temp
+
+        # Determine renderer:
+        # resvg only handles SVG files. If source_temp is not SVG, we must use inkscape.
+        is_resvg = False
+        if source_temp.lower().endswith(".svg"):
+            if renderer and "resvg" in os.path.basename(renderer).lower():
+                active_renderer = renderer
+                is_resvg = True
+            elif renderer and "inkscape" in os.path.basename(renderer).lower():
+                active_renderer = renderer
+                is_resvg = False
+            elif inkscape and "inkscape" in os.path.basename(inkscape).lower() and inkscape != "inkscape":
+                active_renderer = inkscape
+                is_resvg = False
+            else:
+                # Prefer resvg when available; all candidate lookups go through shutil.which so test mocks work
+                local_resvg = (
+                    shutil.which("/opt/homebrew/bin/resvg")
+                    or shutil.which("/usr/local/bin/resvg")
+                    or shutil.which("/opt/local/bin/resvg")
+                )
+                resvg_bin = shutil.which("resvg") or local_resvg
+                if resvg_bin and "resvg" in os.path.basename(resvg_bin).lower():
+                    active_renderer = resvg_bin
+                    is_resvg = True
+                else:
+                    active_renderer = inkscape or find_executable("inkscape") or "inkscape"
+                    is_resvg = False
+        else:
+            active_renderer = inkscape or find_executable("inkscape") or "inkscape"
+            is_resvg = False
+
+        if is_resvg:
+            cmd = [
+                active_renderer,
+                source_temp,
+                output_temp,
+                "--dpi",
+                str(int(round(dpi))),
+            ]
+            if scale_width:
+                cmd.extend(["--width", "4096"])
+            elif scale_height:
+                cmd.extend(["--height", "4096"])
+        else:
+            cmd = [
+                active_renderer,
+                source_temp,
+                f"--export-filename={output_temp}",
+                f"--export-dpi={dpi}",
+            ]
+            if transparent:
+                cmd.append("--export-background-opacity=0")
+            if scale_width:
+                cmd.append("--export-width=4096")
+            elif scale_height:
+                cmd.append("--export-height=4096")
+
+        tool_name = "resvg" if is_resvg else "Inkscape"
+        try:
+            completed = subprocess.run(
+                cmd,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=120,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RepairError(f"failed to convert {source_name} with {tool_name}") from exc
+
+        if completed.returncode != 0 or not os.path.isfile(output_temp):
+            stderr = completed.stderr or ""
+            detail = (
+                stderr.decode("utf-8", "replace")
+                if isinstance(stderr, bytes)
+                else str(stderr)
+            ).strip()
+            suffix_detail = f": {detail[:300]}" if detail else ""
+            raise RepairError(f"failed to convert {source_name} with {tool_name}{suffix_detail}")
+
+        try:
+            with open(output_temp, "rb") as handle:
+                png = handle.read()
+        except OSError as exc:
+            raise RepairError(f"failed to read rendered PNG for {source_name}") from exc
+
+        if not _png_is_basic(png):
+            raise RepairError(f"{tool_name} produced an invalid PNG for {source_name}")
+
+        if transparent:
+            png = png_white_to_transparent(png)
+
+        return (
+            source_name,
+            output_name,
+            png,
+            {"source": source_name, "path": output_name, "bytes": len(png), "method": "rendered", "engine": "resvg" if is_resvg else "inkscape"},
+        )
+    finally:
+        # Immediate cleanup of temporary intermediate files
+        shutil.rmtree(item_dir, ignore_errors=True)
+
+
 def _convert_media(
     archive: zipfile.ZipFile,
     media_infos: Iterable[zipfile.ZipInfo],
     existing_names: set[str],
-    inkscape: str,
+    inkscape: str | None,
     dpi: int | float,
     temporary_dir: str,
     reference_previews: dict[str, bytes],
+    concurrency: int | None = None,
+    renderer: str | None = None,
+    transparent: bool = True,
 ) -> tuple[dict[str, str], dict[str, bytes], list[dict]]:
     replacements: dict[str, str] = {}
     generated: dict[str, bytes] = {}
     converted: list[dict] = []
     allocated = set(existing_names)
-    for info in media_infos:
+
+    items_to_render: list[tuple[int, str, str, bytes]] = []
+    project_dir = os.path.dirname(os.path.dirname(__file__))
+
+    for idx, info in enumerate(media_infos):
         source_name = info.filename
         output_name = _unique_png_name(source_name, allocated)
         allocated.add(output_name)
@@ -439,103 +836,72 @@ def _convert_media(
             converted.append({"source": source_name, "path": output_name,
                               "bytes": len(png), "method": "reference-png"})
             continue
-        suffix = posixpath.splitext(source_name)[1].lower() or ".emf"
-        source_temp = os.path.join(temporary_dir, "source" + suffix)
-        output_temp = os.path.join(temporary_dir, "rendered.png")
-        with open(source_temp, "wb") as handle:
-            handle.write(archive.read(info))
-        try:
-            os.unlink(output_temp)
-        except FileNotFoundError:
-            pass
-        # libemf2svg avoids native EMF importer crashes on some macOS builds.
-        # Keep this intermediate private; only the rendered PNG enters PPTX.
-        emf_converter = None
-        if suffix == ".emf":
-            # Prefer the project-local patched binary over the system copy.
-            # Both lookups go through shutil.which so test mocks work.
-            project_dir = os.path.dirname(os.path.dirname(__file__))
-            local_bin = (
-                shutil.which(os.path.join(project_dir, "bin", "emf2svg-conv"))
-                or shutil.which(os.path.join(project_dir, "artifacts", "bin", "emf2svg-conv"))
+
+        raw_bytes = archive.read(info)
+        items_to_render.append((idx, source_name, output_name, raw_bytes))
+
+    if not items_to_render:
+        return replacements, generated, converted
+
+    max_workers = concurrency if concurrency is not None else min(os.cpu_count() or 4, 8)
+
+    if len(items_to_render) == 1 or max_workers <= 1:
+        for idx, src, out, data in items_to_render:
+            source_name, output_name, png, entry = _convert_single_item(
+                idx, src, out, data, temporary_dir, inkscape, dpi, project_dir,
+                renderer=renderer, transparent=transparent,
             )
-            emf_converter = local_bin or shutil.which("emf2svg-conv")
-        if emf_converter:
-            svg_temp = os.path.join(temporary_dir, "intermediate.svg")
-            if os.path.exists(svg_temp):
-                os.unlink(svg_temp)
+            replacements[source_name] = output_name
+            generated[output_name] = png
+            converted.append(entry)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(max_workers, len(items_to_render))
+        ) as executor:
+            futures = [
+                executor.submit(
+                    _convert_single_item,
+                    idx,
+                    src,
+                    out,
+                    data,
+                    temporary_dir,
+                    inkscape,
+                    dpi,
+                    project_dir,
+                    renderer,
+                    transparent,
+                )
+                for idx, src, out, data in items_to_render
+            ]
             try:
-                result = subprocess.run([emf_converter, "-i", source_temp, "-o", svg_temp],
-                                        capture_output=True, timeout=120, check=False)
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                raise RepairError(f"EMF to SVG conversion failed for {source_name}") from exc
-            if result.returncode != 0 or not os.path.isfile(svg_temp):
-                raise RepairError(f"EMF to SVG conversion failed for {source_name}")
-            try:
-                with open(svg_temp, "r", encoding="utf-8", errors="replace") as f:
-                    raw_svg = f.read()
-                cleaned_svg = optimize_emf_svg(raw_svg)
-                with open(svg_temp, "w", encoding="utf-8") as f:
-                    f.write(cleaned_svg)
+                for future in futures:
+                    source_name, output_name, png, entry = future.result()
+                    replacements[source_name] = output_name
+                    generated[output_name] = png
+                    converted.append(entry)
             except Exception:
-                pass
-            source_temp = svg_temp
-        size_args = []
-        if emf_converter:
-            try:
-                svg_root = ElementTree.parse(source_temp).getroot()
-                bounds = [float(x) for x in svg_root.get("viewBox", "").replace(",", " ").split()]
-                if len(bounds) != 4:
-                    bounds = [0, 0, float(svg_root.get("width", "0")), float(svg_root.get("height", "0"))]
-                if len(bounds) == 4 and bounds[2] > 0 and bounds[3] > 0:
-                    longest = max(bounds[2:]) * dpi / 96
-                    if longest > 4096:
-                        size_args = ["--export-width=4096" if bounds[2] >= bounds[3] else "--export-height=4096"]
-            except (ElementTree.ParseError, ValueError) as exc:
-                raise RepairError(f"Invalid intermediate SVG for {source_name}") from exc
-        try:
-            completed = subprocess.run(
-                [inkscape, source_temp, f"--export-filename={output_temp}", f"--export-dpi={dpi}", *size_args],
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=120,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise RepairError(f"failed to convert {source_name} with Inkscape") from exc
-        if completed.returncode != 0 or not os.path.isfile(output_temp):
-            stderr = completed.stderr or ""
-            detail = (
-                stderr.decode("utf-8", "replace")
-                if isinstance(stderr, bytes)
-                else str(stderr)
-            ).strip()
-            suffix_detail = f": {detail[:300]}" if detail else ""
-            raise RepairError(f"failed to convert {source_name} with Inkscape{suffix_detail}")
-        try:
-            with open(output_temp, "rb") as handle:
-                png = handle.read()
-        except OSError as exc:
-            raise RepairError(f"failed to read rendered PNG for {source_name}") from exc
-        if not _png_is_basic(png):
-            raise RepairError(f"Inkscape produced an invalid PNG for {source_name}")
-        replacements[source_name] = output_name
-        generated[output_name] = png
-        converted.append({"source": source_name, "path": output_name, "bytes": len(png), "method": "rendered"})
+                for f in futures:
+                    f.cancel()
+                raise
+
     return replacements, generated, converted
 
 
 def repair(
     source: os.PathLike[str] | str,
     output: os.PathLike[str] | str,
-    inkscape: str = "inkscape",
+    inkscape: str | None = None,
     dpi: int | float = 300,
     reference_previews: dict[str, os.PathLike[str] | str] | None = None,
+    concurrency: int | None = None,
+    renderer: str | None = None,
+    transparent: bool = True,
 ) -> dict:
     """Convert package EMF/WMF media to PNG and write a new PPTX atomically.
 
     The source and output must be different, and output must not already
-    exist.  All EMF/WMF members are converted with Inkscape; relationship
+    exist.  All EMF/WMF members are converted with resvg or Inkscape; relationship
     targets are updated to collision-safe PNG members while original media,
     OLE binaries, and unrelated ZIP member payloads are retained.  A failed
     conversion or invalid output leaves no output file behind.
@@ -585,7 +951,16 @@ def repair(
             reference_bytes[member] = png
         with tempfile.TemporaryDirectory(prefix="slidebridge-", dir=parent) as temporary_dir:
             replacements, generated, converted = _convert_media(
-                archive, media_infos, all_names, inkscape, dpi, temporary_dir, reference_bytes
+                archive,
+                media_infos,
+                all_names,
+                inkscape,
+                dpi,
+                temporary_dir,
+                reference_bytes,
+                concurrency=concurrency,
+                renderer=renderer,
+                transparent=transparent,
             )
             changed_relationships: list[str] = []
             updated_parts: dict[str, bytes] = {}
@@ -627,8 +1002,9 @@ def repair(
                 for info in infos:
                     payload = updated_parts.get(info.filename)
                     if payload is None:
-                        payload = archive.read(info)
-                    destination.writestr(copy.copy(info), payload)
+                        _copy_archive_member(archive, destination, info)
+                    else:
+                        destination.writestr(copy.copy(info), payload)
                 for member_name, payload in generated.items():
                     destination.writestr(member_name, payload)
             archive.close()

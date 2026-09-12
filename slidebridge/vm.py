@@ -374,7 +374,7 @@ def mac_to_vm_path(mac_path: os.PathLike[str] | str) -> str:
 def _activate_app(app_name: str) -> None:
     try:
         subprocess.run(
-            ["osascript", "-e", f'tell application "{app_name}" to activate'],
+            ["open", "-a", app_name],
             capture_output=True,
             check=False,
         )

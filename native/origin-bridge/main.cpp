@@ -25,6 +25,7 @@ namespace Gdiplus {
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "save_sequence.h"
@@ -170,6 +171,29 @@ HRESULT ParseClsid(const std::wstring& value, CLSID* clsid) {
   return CLSIDFromString(const_cast<LPOLESTR>(value.c_str()), clsid);
 }
 
+bool GetCachedCLSIDFromProgID(const wchar_t* progId, CLSID* outClsid) {
+  if (!progId || !outClsid) return false;
+  static std::unordered_map<std::wstring, std::pair<bool, CLSID>> cache;
+  auto it = cache.find(progId);
+  if (it != cache.end()) {
+    if (it->second.first) {
+      *outClsid = it->second.second;
+      return true;
+    }
+    return false;
+  }
+  CLSID clsid{};
+  HRESULT hr = CLSIDFromProgID(progId, &clsid);
+  if (SUCCEEDED(hr)) {
+    cache[progId] = {true, clsid};
+    *outClsid = clsid;
+    return true;
+  } else {
+    cache[progId] = {false, CLSID_NULL};
+    return false;
+  }
+}
+
 bool IsOriginProgId(const std::wstring& progId) {
   if (progId.empty()) {
     return false;
@@ -189,7 +213,7 @@ bool IsOriginClass(IStorage* storage, REFCLSID root) {
     }
   }
 
-  // 2. Check known Origin ProgIDs in Windows registry
+  // 2. Check known Origin ProgIDs in Windows registry (using cached lookups)
   const wchar_t* const kKnownProgIds[] = {
       L"Origin95.Graph",
       L"Origin.Graph",
@@ -200,7 +224,7 @@ bool IsOriginClass(IStorage* storage, REFCLSID root) {
   };
   for (const wchar_t* name : kKnownProgIds) {
     CLSID registered{};
-    if (SUCCEEDED(CLSIDFromProgID(name, &registered))) {
+    if (GetCachedCLSIDFromProgID(name, &registered)) {
       if (IsEqualGuid(root, registered)) {
         Log(std::wstring(L"IsOriginClass: matched registered ProgID ") + name);
         return true;
@@ -308,11 +332,20 @@ class OriginHost final : public IOleClientSite,
   OriginHost& operator=(const OriginHost&) = delete;
 
   ~OriginHost() {
+    ReleaseCachedApp();
     ReleaseObject();
     if (storage_) {
       storage_->Release();
       storage_ = nullptr;
     }
+  }
+
+  void ReleaseCachedApp() {
+    if (cachedApp_) {
+      cachedApp_->Release();
+      cachedApp_ = nullptr;
+    }
+    cachedDispidExecute_ = DISPID_UNKNOWN;
   }
 
   HRESULT LoadObject() {
@@ -405,47 +438,50 @@ class OriginHost final : public IOleClientSite,
       return false;
     }
 
-    IDispatch* pApp = nullptr;
+    IDispatch* pApp = cachedApp_;
 
-    // 1. Prefer connecting to an active, running Origin instance from the ROT.
-    // When Origin opens the chart via OLEIVERB_OPEN, it registers in ROT.
-    const wchar_t* const kAppProgIds[] = {
-        L"Origin.Application",
-        L"Origin.ApplicationSI"
-    };
+    // 1. If not already cached, connect to an active, running Origin instance from the ROT.
+    if (!pApp) {
+      const wchar_t* const kAppProgIds[] = {
+          L"Origin.Application",
+          L"Origin.ApplicationSI"
+      };
 
-    for (const wchar_t* progId : kAppProgIds) {
-      CLSID clsidApp{};
-      if (SUCCEEDED(CLSIDFromProgID(progId, &clsidApp))) {
-        IUnknown* pUnk = nullptr;
-        if (SUCCEEDED(GetActiveObject(clsidApp, nullptr, &pUnk)) && pUnk) {
-          HRESULT hr = pUnk->QueryInterface(IID_IDispatch, reinterpret_cast<void**>(&pApp));
-          pUnk->Release();
-          if (SUCCEEDED(hr) && pApp) {
-            Log(std::wstring(L"AutoExport: Attached to active Origin instance via ") + progId);
-            break;
+      for (const wchar_t* progId : kAppProgIds) {
+        CLSID clsidApp{};
+        if (GetCachedCLSIDFromProgID(progId, &clsidApp)) {
+          IUnknown* pUnk = nullptr;
+          if (SUCCEEDED(GetActiveObject(clsidApp, nullptr, &pUnk)) && pUnk) {
+            HRESULT hr = pUnk->QueryInterface(IID_IDispatch, reinterpret_cast<void**>(&pApp));
+            pUnk->Release();
+            if (SUCCEEDED(hr) && pApp) {
+              Log(std::wstring(L"AutoExport: Attached to active Origin instance via ") + progId);
+              cachedApp_ = pApp;
+              cachedApp_->AddRef();
+              break;
+            }
           }
         }
       }
-    }
 
-    // 2. If not found in ROT, fallback to CoCreateInstance (Single-Instance preferred)
-    if (!pApp) {
-      CLSID clsidApp{};
-      HRESULT hr = CLSIDFromProgID(L"Origin.ApplicationSI", &clsidApp);
-      if (FAILED(hr)) {
-        hr = CLSIDFromProgID(L"Origin.Application", &clsidApp);
-      }
-      if (SUCCEEDED(hr)) {
-        hr = CoCreateInstance(clsidApp, nullptr, CLSCTX_LOCAL_SERVER, IID_IDispatch,
-                              reinterpret_cast<void**>(&pApp));
-        if (SUCCEEDED(hr) && pApp) {
-          Log(L"AutoExport: Connected to Origin via CoCreateInstance");
-        } else {
-          LogHr(L"CoCreateInstance(Origin COM Application)", hr);
+      // 2. If not found in ROT, fallback to CoCreateInstance (Single-Instance preferred)
+      if (!pApp) {
+        CLSID clsidApp{};
+        bool found = GetCachedCLSIDFromProgID(L"Origin.ApplicationSI", &clsidApp);
+        if (!found) {
+          found = GetCachedCLSIDFromProgID(L"Origin.Application", &clsidApp);
         }
-      } else {
-        LogHr(L"CLSIDFromProgID for Origin COM Automation", hr);
+        if (found) {
+          HRESULT hr = CoCreateInstance(clsidApp, nullptr, CLSCTX_LOCAL_SERVER, IID_IDispatch,
+                                        reinterpret_cast<void**>(&pApp));
+          if (SUCCEEDED(hr) && pApp) {
+            Log(L"AutoExport: Connected to Origin via CoCreateInstance");
+            cachedApp_ = pApp;
+            cachedApp_->AddRef();
+          } else {
+            LogHr(L"CoCreateInstance(Origin COM Application)", hr);
+          }
+        }
       }
     }
 
@@ -454,14 +490,17 @@ class OriginHost final : public IOleClientSite,
       return false;
     }
 
-    DISPID dispidExecute = 0;
-    OLECHAR* memberName = const_cast<OLECHAR*>(L"Execute");
-    HRESULT hr = pApp->GetIDsOfNames(IID_NULL, &memberName, 1, LOCALE_USER_DEFAULT,
-                                     &dispidExecute);
-    if (FAILED(hr)) {
-      LogHr(L"GetIDsOfNames(Execute)", hr);
-      pApp->Release();
-      return false;
+    DISPID dispidExecute = cachedDispidExecute_;
+    if (dispidExecute == DISPID_UNKNOWN) {
+      OLECHAR* memberName = const_cast<OLECHAR*>(L"Execute");
+      HRESULT hr = pApp->GetIDsOfNames(IID_NULL, &memberName, 1, LOCALE_USER_DEFAULT,
+                                       &dispidExecute);
+      if (FAILED(hr)) {
+        LogHr(L"GetIDsOfNames(Execute)", hr);
+        ReleaseCachedApp();
+        return false;
+      }
+      cachedDispidExecute_ = dispidExecute;
     }
 
     auto runCmd = [&](const std::wstring& cmd) {
@@ -493,19 +532,24 @@ class OriginHost final : public IOleClientSite,
     // 1. Primary command: expGraph type:=png (proven to work reliably in Origin OLE)
     runCmd(L"expGraph type:=png filename:=\"preview\" path:=\"" + sessionDir + L"\" overwrite:=replace;");
 
-    // 2. Secondary command: expGraph type:=svg (vector preview if supported)
-    runCmd(L"expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDir + L"\" overwrite:=replace;");
-
-    pApp->Release();
-
     std::wstring previewPng = sessionDir + L"\\preview.png";
     if (FileExists(previewPng)) {
       Log(L"Origin COM Auto-Export succeeded: " + previewPng);
       return true;
-    } else {
-      Log(L"Origin COM Execute returned S_OK, but preview.png was not found at: " + previewPng);
-      return false;
     }
+
+    // 2. Secondary fallback command: expGraph type:=svg (only run if PNG export didn't yield preview.png)
+    Log(L"AutoExport: preview.png not found after PNG export, attempting SVG fallback...");
+    runCmd(L"expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDir + L"\" overwrite:=replace;");
+
+    std::wstring previewSvg = sessionDir + L"\\preview.svg";
+    if (FileExists(previewSvg)) {
+      Log(L"Origin COM Auto-Export SVG fallback succeeded: " + previewSvg);
+      return true;
+    }
+
+    Log(L"Origin COM Execute returned S_OK, but neither preview.png nor preview.svg was found.");
+    return false;
   }
 
   // A preview the user exported from Origin into the session folder.
@@ -1085,6 +1129,8 @@ class OriginHost final : public IOleClientSite,
   bool saving_ = false;
   bool persistencePoisoned_ = false;
   std::wstring outputBasePath_;
+  IDispatch* cachedApp_ = nullptr;
+  DISPID cachedDispidExecute_ = DISPID_UNKNOWN;
 };
 
 class EditApp final {

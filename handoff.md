@@ -107,7 +107,15 @@ clang++ -std=c++17 -Wall -Wextra native/origin-bridge/save_sequence_test.cpp -o 
   - 避免舊版或無 `SI` 註冊環境下 `CoCreateInstance` 誤開空白 Origin 視窗的問題。
 - **測試覆蓋**：新增 `test_custom_clsid_is_passed_to_helper` 等測試，148 項 Python 單元測試全綠通過。
 
+## 純 CLI 渲染器 resvg 整合（2026-09-12 已完成）
+
+- 核心渲染管線正式整合純命令列工具 **`resvg`**（Rust 開發）：
+  - 自動偵測系統 `resvg`，取代原本會喚醒 macOS GUI Dock 圖示彈跳的 Inkscape。
+  - 原生支援 RGBA 透明背景，並透過 `png_white_to_transparent` 消除外部白邊。
+  - 支援 `--renderer`、`--transparent`、`--no-transparent`，同時保留 `--inkscape` 舊版參數相容性。
+  - 160 項單元測試全數通過。
+
 ## 待辦
 
 - PowerPoint Add-in（未開始）。
-- 核心仍依賴本機 Inkscape；要移植到 Office WebView 需設計轉換服務或 WASM 後端。
+- 移植到 Office WebView 需設計轉換服務或 WASM 後端。

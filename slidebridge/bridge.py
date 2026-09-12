@@ -28,6 +28,7 @@ from .core import (
     _PNG_SIGNATURE,
     _SLIDE_RE,
     _check_archive,
+    _copy_archive_member,
     _local_name,
     _path_string,
     _png_content_type,
@@ -38,6 +39,7 @@ from .core import (
     _resolve_target,
     _shape_id_matches,
     _slide_ole_ids,
+    png_white_to_transparent,
 )
 
 
@@ -88,9 +90,18 @@ def _is_ole_relationship(rel_type: str) -> bool:
     return rel_type.rsplit("/", 1)[-1].lower() == _OLE_RELATIONSHIP_NAME
 
 
-def _find_references(archive: zipfile.ZipFile, member: str) -> list[dict[str, str]]:
+def _index_ole_references(
+    archive: zipfile.ZipFile,
+) -> dict[str, list[dict[str, str]]]:
+    """Index every internal OLE relationship in an archive by target member.
+
+    Slide and relationship parts are read once per archive.  Keeping this
+    index local to the archive preserves the existing validation behavior
+    while allowing callers that enumerate several OLE members to reuse the
+    scan.
+    """
     names = {info.filename for info in archive.infolist() if not info.is_dir()}
-    references: list[dict[str, str]] = []
+    references_by_member: dict[str, list[dict[str, str]]] = {}
     for slide in sorted(name for name in names if _SLIDE_RE.fullmatch(name)):
         rels_part = _relationship_part_for(slide)
         if rels_part not in names:
@@ -102,10 +113,17 @@ def _find_references(archive: zipfile.ZipFile, member: str) -> list[dict[str, st
         for relationship_id, _target, resolved, rel_type in relationships:
             if (
                 relationship_id in ole_ids
-                and resolved == member
+                and resolved is not None
                 and _is_ole_relationship(rel_type)
             ):
-                references.append({"slide": slide, "relationship_id": relationship_id})
+                references_by_member.setdefault(resolved, []).append(
+                    {"slide": slide, "relationship_id": relationship_id}
+                )
+    return references_by_member
+
+
+def _find_references(archive: zipfile.ZipFile, member: str) -> list[dict[str, str]]:
+    references = _index_ole_references(archive).get(member, [])
     if not references:
         raise SlideBridgeError(
             f"OLE member is not referenced by an internal OLE relationship on a slide: {member}"
@@ -310,196 +328,7 @@ def _validate_preview(data: bytes, path: str | Path) -> str:
     raise SlideBridgeError(f"unsupported preview image format (must be PNG or EMF): {path}")
 
 
-def png_white_to_transparent(data: bytes, tolerance: int = 10) -> bytes:
-    """Convert white border background of a PNG image to transparent alpha (RGBA).
-
-    Uses flood fill starting from the four outer image boundaries to make exterior
-    margins transparent while preserving axes, text, plot curves, and enclosed
-    white elements (e.g. data points or text labels).
-    Uses only Python standard library (struct, zlib). Returns unmodified bytes
-    on any unsupported format or decompression failure.
-    """
-    if not data.startswith(_PNG_SIGNATURE):
-        return data
-    try:
-        pos = 8
-        chunks = []
-        width = height = bit_depth = color_type = None
-        idat_data = bytearray()
-
-        while pos < len(data):
-            if pos + 8 > len(data):
-                return data
-            length = struct.unpack(">I", data[pos : pos + 4])[0]
-            ctype = data[pos + 4 : pos + 8]
-            cdata = data[pos + 8 : pos + 8 + length]
-            pos += 12 + length
-
-            if ctype == b"IHDR":
-                width, height, bit_depth, color_type = struct.unpack(">IIBB", cdata[:10])
-                if bit_depth != 8 or color_type not in (2, 6):
-                    return data
-            elif ctype == b"IDAT":
-                idat_data.extend(cdata)
-            elif ctype == b"IEND":
-                break
-            else:
-                chunks.append((ctype, cdata))
-
-        if not idat_data or not width or not height:
-            return data
-
-        raw = zlib.decompress(bytes(idat_data))
-        bpp = 3 if color_type == 2 else 4
-        stride = width * bpp
-        reconstructed = bytearray(height * stride)
-
-        src_pos = 0
-        for y in range(height):
-            if src_pos >= len(raw):
-                return data
-            filter_type = raw[src_pos]
-            src_pos += 1
-            if src_pos + stride > len(raw):
-                return data
-            line = bytearray(raw[src_pos : src_pos + stride])
-            src_pos += stride
-            prior = reconstructed[(y - 1) * stride : y * stride] if y > 0 else None
-
-            if filter_type == 1:
-                for x in range(bpp, stride):
-                    line[x] = (line[x] + line[x - bpp]) & 0xFF
-            elif filter_type == 2:
-                if prior:
-                    for x in range(stride):
-                        line[x] = (line[x] + prior[x]) & 0xFF
-            elif filter_type == 3:
-                for x in range(stride):
-                    left = line[x - bpp] if x >= bpp else 0
-                    up = prior[x] if prior else 0
-                    line[x] = (line[x] + ((left + up) >> 1)) & 0xFF
-            elif filter_type == 4:
-                for x in range(stride):
-                    a = line[x - bpp] if x >= bpp else 0
-                    b = prior[x] if prior else 0
-                    c = prior[x - bpp] if (prior and x >= bpp) else 0
-                    p = a + b - c
-                    pa = abs(p - a)
-                    pb = abs(p - b)
-                    pc = abs(p - c)
-                    pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
-                    line[x] = (line[x] + pr) & 0xFF
-            reconstructed[y * stride : (y + 1) * stride] = line
-
-        threshold = 255 - tolerance
-        n_pixels = width * height
-        is_bg = bytearray(n_pixels)
-
-        if bpp == 3:
-            for i in range(n_pixels):
-                off = i * 3
-                if reconstructed[off] >= threshold and reconstructed[off + 1] >= threshold and reconstructed[off + 2] >= threshold:
-                    is_bg[i] = 1
-        else:
-            for i in range(n_pixels):
-                off = i * 4
-                if reconstructed[off + 3] == 0 or (reconstructed[off] >= threshold and reconstructed[off + 1] >= threshold and reconstructed[off + 2] >= threshold):
-                    is_bg[i] = 1
-
-        mask = bytearray(n_pixels)
-        queue = deque()
-
-        for x in range(width):
-            if is_bg[x]:
-                mask[x] = 1
-                queue.append(x)
-            bottom_idx = (height - 1) * width + x
-            if is_bg[bottom_idx] and not mask[bottom_idx]:
-                mask[bottom_idx] = 1
-                queue.append(bottom_idx)
-
-        for y in range(height):
-            left_idx = y * width
-            if is_bg[left_idx] and not mask[left_idx]:
-                mask[left_idx] = 1
-                queue.append(left_idx)
-            right_idx = y * width + (width - 1)
-            if is_bg[right_idx] and not mask[right_idx]:
-                mask[right_idx] = 1
-                queue.append(right_idx)
-
-        while queue:
-            curr = queue.popleft()
-            cx = curr % width
-            cy = curr // width
-
-            if cx > 0:
-                n = curr - 1
-                if is_bg[n] and not mask[n]:
-                    mask[n] = 1
-                    queue.append(n)
-            if cx + 1 < width:
-                n = curr + 1
-                if is_bg[n] and not mask[n]:
-                    mask[n] = 1
-                    queue.append(n)
-            if cy > 0:
-                n = curr - width
-                if is_bg[n] and not mask[n]:
-                    mask[n] = 1
-                    queue.append(n)
-            if cy + 1 < height:
-                n = curr + width
-                if is_bg[n] and not mask[n]:
-                    mask[n] = 1
-                    queue.append(n)
-
-        new_raw = bytearray((width * 4 + 1) * height)
-        dest_pos = 0
-        pixel_idx = 0
-
-        for y in range(height):
-            new_raw[dest_pos] = 0
-            dest_pos += 1
-            for x in range(width):
-                if mask[pixel_idx]:
-                    new_raw[dest_pos : dest_pos + 4] = b"\xff\xff\xff\x00"
-                else:
-                    src_off = pixel_idx * bpp
-                    new_raw[dest_pos] = reconstructed[src_off]
-                    new_raw[dest_pos + 1] = reconstructed[src_off + 1]
-                    new_raw[dest_pos + 2] = reconstructed[src_off + 2]
-                    new_raw[dest_pos + 3] = reconstructed[src_off + 3] if bpp == 4 else 255
-                dest_pos += 4
-                pixel_idx += 1
-
-        new_idat = zlib.compress(bytes(new_raw), 6)
-        out = bytearray(b"\x89PNG\r\n\x1a\n")
-        ihdr_payload = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
-        out.extend(struct.pack(">I", len(ihdr_payload)))
-        out.extend(b"IHDR")
-        out.extend(ihdr_payload)
-        out.extend(struct.pack(">I", zlib.crc32(b"IHDR" + ihdr_payload)))
-
-        for ctype, cdata in chunks:
-            if ctype in (b"sRGB", b"gAMA", b"pHYs"):
-                out.extend(struct.pack(">I", len(cdata)))
-                out.extend(ctype)
-                out.extend(cdata)
-                out.extend(struct.pack(">I", zlib.crc32(ctype + cdata)))
-
-        out.extend(struct.pack(">I", len(new_idat)))
-        out.extend(b"IDAT")
-        out.extend(new_idat)
-        out.extend(struct.pack(">I", zlib.crc32(b"IDAT" + new_idat)))
-
-        out.extend(struct.pack(">I", 0))
-        out.extend(b"IEND")
-        out.extend(struct.pack(">I", zlib.crc32(b"IEND")))
-
-        return bytes(out)
-    except Exception:
-        return data
+# Note: png_white_to_transparent is imported from .core above for backward compatibility.
 
 
 def _write_new_file(path: Path, data: bytes) -> None:
@@ -705,12 +534,31 @@ def writeback_ole(
             if not chosen_preview_path.is_file():
                 raise SlideBridgeError(f"specified preview image not found: {chosen_preview_path}")
         else:
-            # Check if Origin exported preview.svg and render high-res transparent PNG via inkscape
+            # Check if Origin exported preview.svg and render high-res transparent PNG via resvg/inkscape
             preview_svg = session_path / "preview.svg"
             if preview_svg.is_file():
+                resvg_bin = shutil.which("resvg") or "/opt/homebrew/bin/resvg"
                 inkscape_bin = shutil.which("inkscape") or "/opt/homebrew/bin/inkscape"
-                if os.path.exists(inkscape_bin):
-                    svg_png = session_path / "preview_from_svg.png"
+                svg_png = session_path / "preview_from_svg.png"
+                if os.path.exists(resvg_bin):
+                    try:
+                        subprocess.run(
+                            [
+                                resvg_bin,
+                                str(preview_svg),
+                                str(svg_png),
+                                "--dpi=300",
+                            ],
+                            check=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            timeout=15,
+                        )
+                        if svg_png.is_file():
+                            chosen_preview_path = svg_png
+                    except Exception:
+                        pass
+                elif os.path.exists(inkscape_bin):
                     try:
                         subprocess.run(
                             [
@@ -818,8 +666,9 @@ def writeback_ole(
             for info in infos:
                 payload = updated_parts.get(info.filename)
                 if payload is None:
-                    payload = archive.read(info)
-                destination.writestr(copy.copy(info), payload)
+                    _copy_archive_member(archive, destination, info)
+                else:
+                    destination.writestr(copy.copy(info), payload)
             for member_name, payload in new_members.items():
                 destination.writestr(member_name, payload)
 
@@ -884,18 +733,40 @@ def list_ole_objects(input_path: os.PathLike[str] | str) -> list[dict]:
     source_value = _path_string(input_path)
     archive = _check_archive(source_value)
     try:
-        names = {info.filename for info in archive.infolist() if not info.is_dir()}
-        ole_members = sorted([
-            name for name in names
+        infos = {
+            info.filename: info
+            for info in archive.infolist()
+            if not info.is_dir()
+        }
+        ole_members = sorted(
+            name
+            for name in infos
             if name.startswith(_EMBEDDINGS_PREFIX) and name != _EMBEDDINGS_PREFIX
-        ])
+        )
+
+        # A malformed slide or relationship part used to make every
+        # per-member _find_references call fail.  Keep that behavior: no
+        # object is returned from a package whose reference scan is invalid.
+        try:
+            references_by_member = _index_ole_references(archive)
+        except SlideBridgeError:
+            references_by_member = None
+
         results: list[dict] = []
         for member in ole_members:
             try:
-                data = archive.read(member)
-                if not data.startswith(_CFB_SIGNATURE):
+                info = infos[member]
+                with archive.open(info) as handle:
+                    signature = handle.read(len(_CFB_SIGNATURE))
+                if signature != _CFB_SIGNATURE:
                     continue
-                references = _find_references(archive, member)
+                if references_by_member is None:
+                    continue
+                references = references_by_member.get(member, [])
+                if not references:
+                    # Match _find_references' behavior for an unreferenced
+                    # member without rescanning the archive.
+                    continue
                 previews = _find_preview_members(archive, references)
                 slides = sorted({ref["slide"] for ref in references})
                 results.append({
@@ -903,7 +774,7 @@ def list_ole_objects(input_path: os.PathLike[str] | str) -> list[dict]:
                     "slides": slides,
                     "previews": previews,
                     "references": references,
-                    "bytes": len(data),
+                    "bytes": info.file_size,
                 })
             except SlideBridgeError:
                 continue
