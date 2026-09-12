@@ -37,6 +37,8 @@ python3 -m slidebridge doctor                              # 環境預檢
 
 `python3 -m pip install -e .` 後可改用 `slidebridge` 指令。
 
+`--renderer resvg` 仍需 Inkscape 處理 WMF，或未能先轉成 SVG 的 EMF。`--no-transparent` 會略過白色邊界去背，也不要求 Inkscape 使用透明背景；它不會把 renderer 原本輸出的透明區域填成白色。
+
 ## 修復流程與限制
 
 1. 檢查 ZIP package，列出 metafile 圖片與 OLE 預覽圖。
@@ -97,11 +99,11 @@ Windows 端需 `origin-bridge.exe`（交叉編譯：`bash scripts/build_origin_b
 - 保留 OLE bytes 不等於 Office 會接受所有變體；輸出仍需在 Mac PowerPoint 檢視，並在 Windows + Origin 驗證編輯流程。數位簽章修改後不再有效。
 - **尚未開始**：PowerPoint Add-in。核心目前依賴本機 Inkscape，移植到 Office WebView 需要轉換服務或 WASM 後端。
 
-測試：147 項 Python 單元測試（含 14 項原生 EMF 渲染測試），另有 4 項 C++ 持久化測試。
+測試：177 項 Python 單元測試（含 14 項原生 EMF 渲染測試），另有 4 項 C++ 持久化測試。
 
 ```sh
-python3 -m unittest discover -s tests -v                                        # 133 項，14 項原生 EMF skip
-SLIDEBRIDGE_TEST_EMF2SVG=bin/emf2svg-conv python3 -m unittest discover -s tests -v   # 147 項全跑
+python3 -m unittest discover -s tests -v                                        # 177 項，其中 14 項原生 EMF skip
+SLIDEBRIDGE_TEST_EMF2SVG=bin/emf2svg-conv python3 -m unittest discover -s tests -v   # 177 項全跑
 python3 scripts/verify_package.py input.pptx input_fixed.pptx                   # 真實樣本完整性比對
 ```
 

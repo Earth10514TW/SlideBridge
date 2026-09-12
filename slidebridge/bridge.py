@@ -13,12 +13,9 @@ import json
 import os
 import posixpath
 import shutil
-import struct
 import subprocess
 import tempfile
 import zipfile
-import zlib
-from collections import deque
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -41,12 +38,24 @@ from .core import (
     _slide_ole_ids,
     png_white_to_transparent,
 )
+from .locate import find_executable
 
 
 _CFB_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _CFB_MIN_SIZE = 512
 _OLE_RELATIONSHIP_NAME = "oleobject"
 _EMBEDDINGS_PREFIX = "ppt/embeddings/"
+_INKSCAPE_CANDIDATES = (
+    "/Applications/Inkscape.app/Contents/MacOS/inkscape",
+    "/opt/homebrew/bin/inkscape",
+    "/usr/local/bin/inkscape",
+    "/opt/local/bin/inkscape",
+)
+_RESVG_CANDIDATES = (
+    "/opt/homebrew/bin/resvg",
+    "/usr/local/bin/resvg",
+    "/opt/local/bin/resvg",
+)
 
 
 def _sha256(data: bytes) -> str:
@@ -328,6 +337,78 @@ def _validate_preview(data: bytes, path: str | Path) -> str:
     raise SlideBridgeError(f"unsupported preview image format (must be PNG or EMF): {path}")
 
 
+def _render_svg_preview(preview_svg: Path, session_path: Path) -> Path | None:
+    """Render an SVG preview, trying resvg before Inkscape.
+
+    Each renderer gets a unique temporary output.  The published preview is
+    replaced only after the output has been read and validated, so a failed
+    attempt cannot make a stale or partial image look successful.
+    """
+    renderers = (
+        (
+            "resvg",
+            lambda: find_executable("resvg", absolute_candidates=_RESVG_CANDIDATES),
+        ),
+        (
+            "inkscape",
+            lambda: find_executable("inkscape", absolute_candidates=_INKSCAPE_CANDIDATES),
+        ),
+    )
+    published_path = session_path / "preview_from_svg.png"
+
+    for renderer_name, locate in renderers:
+        renderer = locate()
+        if not renderer:
+            continue
+
+        temporary_path: Path | None = None
+        try:
+            fd, temporary_name = tempfile.mkstemp(
+                prefix=".slidebridge-svg-", suffix=".png", dir=session_path
+            )
+            os.close(fd)
+            temporary_path = Path(temporary_name)
+            if renderer_name == "resvg":
+                command = [
+                    renderer,
+                    str(preview_svg),
+                    str(temporary_path),
+                    "--dpi=300",
+                ]
+            else:
+                command = [
+                    renderer,
+                    str(preview_svg),
+                    f"--export-filename={temporary_path}",
+                    "--export-dpi=300",
+                    "--export-background-opacity=0",
+                ]
+            completed = subprocess.run(
+                command,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+            )
+            if getattr(completed, "returncode", 0) != 0:
+                continue
+            rendered = temporary_path.read_bytes()
+            if not _png_is_basic(rendered):
+                continue
+            os.replace(temporary_path, published_path)
+            temporary_path = None
+            return published_path
+        except (OSError, subprocess.SubprocessError):
+            continue
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink()
+                except OSError:
+                    pass
+    return None
+
+
 # Note: png_white_to_transparent is imported from .core above for backward compatibility.
 
 
@@ -537,46 +618,7 @@ def writeback_ole(
             # Check if Origin exported preview.svg and render high-res transparent PNG via resvg/inkscape
             preview_svg = session_path / "preview.svg"
             if preview_svg.is_file():
-                resvg_bin = shutil.which("resvg") or "/opt/homebrew/bin/resvg"
-                inkscape_bin = shutil.which("inkscape") or "/opt/homebrew/bin/inkscape"
-                svg_png = session_path / "preview_from_svg.png"
-                if os.path.exists(resvg_bin):
-                    try:
-                        subprocess.run(
-                            [
-                                resvg_bin,
-                                str(preview_svg),
-                                str(svg_png),
-                                "--dpi=300",
-                            ],
-                            check=True,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            timeout=15,
-                        )
-                        if svg_png.is_file():
-                            chosen_preview_path = svg_png
-                    except Exception:
-                        pass
-                elif os.path.exists(inkscape_bin):
-                    try:
-                        subprocess.run(
-                            [
-                                inkscape_bin,
-                                str(preview_svg),
-                                f"--export-filename={svg_png}",
-                                "--export-dpi=300",
-                                "--export-background-opacity=0",
-                            ],
-                            check=True,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            timeout=15,
-                        )
-                        if svg_png.is_file():
-                            chosen_preview_path = svg_png
-                    except Exception:
-                        pass
+                chosen_preview_path = _render_svg_preview(preview_svg, session_path)
 
             if chosen_preview_path is None:
                 candidates = ["preview.png", "preview.emf", "edited.png", "edited.emf"]

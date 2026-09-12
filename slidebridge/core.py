@@ -717,20 +717,31 @@ def _convert_single_item(
                 is_resvg = "resvg" in os.path.basename(renderer).lower()
             else:
                 # Prefer resvg when available; all candidate lookups go through shutil.which so test mocks work
-                local_resvg = (
-                    shutil.which("/opt/homebrew/bin/resvg")
-                    or shutil.which("/usr/local/bin/resvg")
-                    or shutil.which("/opt/local/bin/resvg")
-                )
-                resvg_bin = shutil.which("resvg") or local_resvg
+                resvg_bin = shutil.which("resvg")
+                if not resvg_bin:
+                    for candidate in _RESVG_CANDIDATES:
+                        resvg_bin = shutil.which(candidate)
+                        if resvg_bin:
+                            break
                 if resvg_bin and "resvg" in os.path.basename(resvg_bin).lower():
                     active_renderer = resvg_bin
                     is_resvg = True
                 else:
-                    active_renderer = find_executable("inkscape") or "inkscape"
+                    active_renderer = find_executable(
+                        "inkscape",
+                        absolute_candidates=("/Applications/Inkscape.app/Contents/MacOS/inkscape",),
+                    ) or "inkscape"
                     is_resvg = False
         else:
-            active_renderer = renderer or find_executable("inkscape") or "inkscape"
+            # Even an explicitly selected resvg cannot import EMF/WMF.
+            # Keep the native metafile fallback on an Inkscape executable.
+            if renderer and "resvg" not in os.path.basename(renderer).lower():
+                active_renderer = renderer
+            else:
+                active_renderer = find_executable(
+                    "inkscape",
+                    absolute_candidates=("/Applications/Inkscape.app/Contents/MacOS/inkscape",),
+                ) or "inkscape"
             is_resvg = False
 
         if is_resvg:
@@ -820,7 +831,7 @@ def _convert_media(
     converted: list[dict] = []
     allocated = set(existing_names)
 
-    items_to_render: list[tuple[int, str, str, bytes]] = []
+    items_to_render: list[tuple[int, str, str, zipfile.ZipInfo]] = []
     project_dir = os.path.dirname(os.path.dirname(__file__))
 
     for idx, info in enumerate(media_infos):
@@ -835,8 +846,7 @@ def _convert_media(
                               "bytes": len(png), "method": "reference-png"})
             continue
 
-        raw_bytes = archive.read(info)
-        items_to_render.append((idx, source_name, output_name, raw_bytes))
+        items_to_render.append((idx, source_name, output_name, info))
 
     if not items_to_render:
         return replacements, generated, converted
@@ -844,12 +854,12 @@ def _convert_media(
     max_workers = concurrency if concurrency is not None else min(os.cpu_count() or 4, 8)
 
     if len(items_to_render) == 1 or max_workers <= 1:
-        for idx, src, out, data in items_to_render:
+        for idx, src, out, info in items_to_render:
             source_name, output_name, png, entry = _convert_single_item(
                 idx,
                 src,
                 out,
-                data,
+                archive.read(info),
                 temporary_dir,
                 dpi,
                 project_dir,
@@ -863,31 +873,45 @@ def _convert_media(
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=min(max_workers, len(items_to_render))
         ) as executor:
-            futures = [
-                executor.submit(
-                    _convert_single_item,
-                    idx,
-                    src,
-                    out,
-                    data,
-                    temporary_dir,
-                    dpi,
-                    project_dir,
-                    renderer,
-                    transparent,
+            # Keep raw metafiles bounded by the worker count. Read ZIP data
+            # on this thread only; workers own conversion and temporary files.
+            remaining = iter(items_to_render)
+            pending = {}
+            results = {}
+
+            def submit_next() -> None:
+                item = next(remaining, None)
+                if item is None:
+                    return
+                idx, src, out, info = item
+                future = executor.submit(
+                    _convert_single_item, idx, src, out, archive.read(info),
+                    temporary_dir, dpi, project_dir, renderer, transparent,
                 )
-                for idx, src, out, data in items_to_render
-            ]
+                pending[future] = idx
+
             try:
-                for future in futures:
-                    source_name, output_name, png, entry = future.result()
-                    replacements[source_name] = output_name
-                    generated[output_name] = png
-                    converted.append(entry)
+                for _ in range(min(max_workers, len(items_to_render))):
+                    submit_next()
+                while pending:
+                    done, _ = concurrent.futures.wait(
+                        pending, return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    for future in done:
+                        results[pending.pop(future)] = future.result()
+                    for _ in done:
+                        submit_next()
             except Exception:
-                for f in futures:
-                    f.cancel()
+                for future in pending:
+                    future.cancel()
                 raise
+
+            # Completion order must not change the report or ZIP member order.
+            for idx in sorted(results):
+                source_name, output_name, png, entry = results[idx]
+                replacements[source_name] = output_name
+                generated[output_name] = png
+                converted.append(entry)
 
     return replacements, generated, converted
 
@@ -900,7 +924,8 @@ def repair(
     reference_previews: dict[str, os.PathLike[str] | str] | None = None,
     concurrency: int | None = None,
     transparent: bool = True,
-    **kwargs,
+    *,
+    inkscape: str | None = None,
 ) -> dict:
     """Convert package EMF/WMF media to PNG and write a new PPTX atomically.
 
@@ -911,9 +936,12 @@ def repair(
     conversion or invalid output leaves no output file behind.
     ``reference_previews`` maps exact EMF/WMF package paths to trusted PNG
     exports, which are embedded byte-for-byte without resizing or rendering.
+    ``inkscape`` is a legacy keyword alias for ``renderer``; pass only one.
     """
-    if "inkscape" in kwargs and not renderer:
-        renderer = kwargs["inkscape"]
+    if inkscape is not None:
+        if renderer is not None:
+            raise TypeError("specify only one of renderer and the legacy inkscape argument")
+        renderer = inkscape
 
     source_path = _path_string(source)
     output_path = _path_string(output)

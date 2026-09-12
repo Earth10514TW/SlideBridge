@@ -315,7 +315,26 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(out.is_file())
         self.assertTrue(any("/custom/legacy_inkscape" in c[0] for c in recorded_calls))
 
+    def test_repair_rejects_unknown_keywords(self):
+        with self.assertRaisesRegex(TypeError, "unexpected keyword argument"):
+            repair(self.source, self.output, transparant=False)
+        self.assertFalse(self.output.exists())
+
+    def test_repair_rejects_conflicting_renderer_arguments(self):
+        with self.assertRaisesRegex(TypeError, "specify only one"):
+            repair(self.source, self.output, renderer="resvg", inkscape="inkscape")
+        self.assertFalse(self.output.exists())
+
+    def test_explicit_resvg_falls_back_for_native_metafiles(self):
+        # Covers WMF and EMF when no emf2svg converter is available.
+        with patch('slidebridge.core.shutil.which', return_value=None), \
+             patch('slidebridge.core.find_executable', return_value='/mock/inkscape'), \
+             patch('slidebridge.core.subprocess.run', side_effect=renderer) as run:
+            result = repair(self.source, self.output, renderer='/mock/resvg')
+        self.assertEqual(len(result['converted']), 2)
+        self.assertTrue(all(entry['engine'] == 'inkscape' for entry in result['converted']))
+        self.assertTrue(all(call.args[0][0] == '/mock/inkscape' for call in run.call_args_list))
+
 
 if __name__ == '__main__':
     unittest.main()
-
