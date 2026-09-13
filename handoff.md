@@ -168,8 +168,11 @@ clang++ -std=c++17 -Wall -Wextra native/origin-bridge/save_sequence_test.cpp -o 
 
 **驗證**：匯入的 DLL 與原本一致（只少了已不需要的 `api-ms-win-crt-filesystem` / `-time`），
 所有使用者可見字串仍在 PE 裡，181 項 Python 測試 + 4 項 C++ 持久化測試全綠。
-**但沒有在 VM 上實跑過**（Parallels CLI 在工具沙箱內被擋），
-`WriteStderr` 的 UTF-8 輸出要請使用者在真機 smoke test 一次。
+**已在 guest 端 `dir` 確認 exe 可見**（323,584 bytes / 16:17，與 Mac 端一致），
+但 helper 的實際執行與視覺效果仍要使用者手動在 VM 內確認。
+（更正：prlctl **可用**——`/usr/local/bin/prlctl` 是壞掉的 wrapper，要用
+`/Applications/Parallels Desktop.app/Contents/MacOS/prlctl`；`prlctl list` 預設只顯示
+running 的 VM，paused 的要 `list -a`。）`WriteStderr` 的 UTF-8 輸出要請使用者 smoke test 一次。
 
 **量測方式（可複驗）**：
 
