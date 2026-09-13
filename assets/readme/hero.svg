@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="540" viewBox="0 0 1200 540" role="img" aria-labelledby="title desc">
+  <title id="title">SlideBridge — 修好顯示，保留編輯</title>
+  <desc id="desc">PowerPoint 圖表修復機制示意：將 EMF 預覽轉為 PNG，原始 OLE 二進位資料保持不變，輸出新的 PPTX 簡報。</desc>
+  <rect width="1200" height="540" rx="24" fill="#eef6ff"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang TC, sans-serif">
+    <g id="identity" fill="#102b49">
+      <text x="64" y="113" font-size="82" font-weight="750" letter-spacing="-3">SlideBridge</text>
+      <text x="64" y="179" font-size="42" font-weight="600">修好顯示，保留編輯。</text>
+      <text x="64" y="228" font-size="27" fill="#486580">PowerPoint for Mac × Origin</text>
+    </g>
+    <g id="slide-symbol" transform="translate(943 69)" fill="none" stroke="#1674db" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="0" y="0" width="184" height="130" rx="12"/>
+      <path d="M29 99V34M29 99H157" stroke="#486580" stroke-width="3"/>
+      <path d="M43 85L74 62L104 74L144 36"/>
+      <circle cx="74" cy="62" r="5" fill="#1674db" stroke="none"/>
+      <circle cx="104" cy="74" r="5" fill="#1674db" stroke="none"/>
+    </g>
+    <path d="M64 266H1136" stroke="#c6d9ed" stroke-width="2"/>
+    <g id="preview-conversion">
+      <text x="64" y="336" font-size="35" fill="#486580">預覽圖</text>
+      <text x="308" y="338" font-size="48" font-weight="650" fill="#102b49">EMF</text>
+      <path d="M480 321H680M665 309L681 321L665 333" fill="none" stroke="#1674db" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="742" y="338" font-size="48" font-weight="650" fill="#1674db">PNG</text>
+      <text x="960" y="336" font-size="35" fill="#1674db">重新顯示</text>
+    </g>
+    <g id="ole-preservation">
+      <text x="64" y="425" font-size="35" fill="#486580">原始資料</text>
+      <text x="308" y="427" font-size="48" font-weight="650" fill="#102b49">OLE</text>
+      <path d="M480 410H680M665 398L681 410L665 422" fill="none" stroke="#1674db" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="742" y="427" font-size="48" font-weight="650" fill="#102b49">OLE</text>
+      <text x="960" y="425" font-size="35" fill="#102b49">完整保留</text>
+    </g>
+    <text x="64" y="501" font-size="25" fill="#486580">修復機制示意 · 輸出新的 .pptx 簡報</text>
+  </g>
+</svg>
