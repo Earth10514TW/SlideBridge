@@ -58,6 +58,10 @@ struct ContentView: View {
                     }
                 }
                 .listStyle(.sidebar)
+                // Without this the sidebar list's top inset collapses to zero
+                // inside the VStack and the selection pill sits flush against
+                // the divider. 10pt matches the footer's vertical padding.
+                .padding(.top, 10)
 
                 Spacer()
 

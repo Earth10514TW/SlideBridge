@@ -147,10 +147,19 @@ clang++ -std=c++17 -Wall -Wextra native/origin-bridge/save_sequence_test.cpp -o 
 
 1. **側邊欄出現雙層選取高亮**：原本是 `List(AppTab.allCases, selection:)` 裡面再包一層 `NavigationLink(value:)`。`AppTab.id` 是 `String`（rawValue）而 `selection` 的型別是 `AppTab`，兩者對不上，List 自己的選取畫不出來，只剩 NavigationLink 的高亮，兩層互相錯位成疊影。改成 `ForEach` + `.tag(tab)` 讓型別對齊，並移除 row 上多餘的 `.padding(.vertical, 8)`（它把列撐高，選取藥丸跟著變胖）。
    - 全專案沒有任何 `navigationDestination`／`NavigationPath`／`NavigationStack`，detail 區塊本來就是 `switch appState.selectedTab` 驅動，所以那個 `NavigationLink` 是純空轉，移除不影響導覽。
+   - **後續回報**：雙層高亮修掉後，選取藥丸與上方的 `Divider()` 之間只剩約 3pt，看起來黏在一起。原因是 `List` 被放進 `VStack(spacing: 0)` 之後，`.listStyle(.sidebar)` 原本的頂部內縮塌成 0。補 `.padding(.top, 10)`（刻意與 footer 的 `.padding(.vertical, 10)` 一致）解決。
 2. **工具列語言選單多一層、且不顯示文字**：`Menu { Picker(...) }` 會把 Picker 變成以 Picker 標題為名的子選單，使用者得先點「Language」才看得到語言；而 macOS 工具列項目預設 icon-only，`Label` 的文字被吃掉，只剩地球圖示。改成扁平 `Button` 清單（三個選項直接展開、目前項目帶勾號），並補 `.labelStyle(.titleAndIcon)` 讓文字出現。
 3. **順手對齊**：`App.swift` 的選單列語言選單改用同一套 `menuLabel(using:)` 與勾號，避免兩處清單各自漂移。`AppLanguage.displayName`（DoctorView／OnboardingView 的 segmented picker 在用）維持原樣；新增的 `menuLabel` 只服務選單——語言名稱一律以自身語言呈現（介面語言看不懂也找得到），只有「跟隨系統」跟著介面語言走。
 
 驗證：`bash scripts/build_mac_app.sh` 編譯無警告，181 項 Python 測試全綠。
+
+> **重建 App 前一定要先結束 App。** `codesign` 在 App 執行中會失敗，回報
+> `resource fork, Finder information, or similar detritus not allowed` ——
+> 腳本裡的 `xattr -cr` / `dot_clean` 對「執行中的 bundle」清不乾淨。
+> 更陰險的是 `bash scripts/build_mac_app.sh | tail` 會把退出碼吃掉（pipeline 回報的是
+> `tail` 的 0），建置失敗會靜默通過、舊的 binary 繼續被用。
+> **先 `pkill -x SlideBridge` 再建置，而且要直接跑腳本、不要接 pipe。**
+> 建完可用 `codesign -v dist/SlideBridge.app` 確認簽章有效。
 
 > 註：本機目前**無法**用截圖或 AX 做自動化巡檢——螢幕錄製未授權（`screencapture` 回報 `could not create image from display`），AX 樹也取不到節點。這兩個問題原本是靠 `.tmp/ui-check/ax` 巡檢的，要重新授權才能恢復。
 
