@@ -54,17 +54,26 @@ _STATE_SCRIPT_SOURCE = """on run argv
         set w to active window
         set curSlide to slide index of (slide of view of w)
         set sel to selection of w
-        set selType to selection type of sel as text
+        set isShapeSel to false
+        try
+            if (selection type of sel is selection type shapes) or ((selection type of sel as text) is "selection type shapes") then
+                set isShapeSel to true
+            end if
+        end try
         
-        if selType is "selection type shapes" then
-            set sr to shape range of sel
-            set s to shape 1 of sr
-            set vName to name of s as text
-            set vTop to (top of s) as text
-            set vLeft to (left position of s) as text
-            set vW to (width of s) as text
-            set vH to (height of s) as text
-            return "OK|" & presPath & "|" & curSlide & "|SHAPE|" & vName & "|" & vLeft & "|" & vTop & "|" & vW & "|" & vH
+        if isShapeSel then
+            try
+                set sr to shape range of sel
+                set s to shape 1 of sr
+                set vName to name of s as text
+                set vTop to (top of s) as text
+                set vLeft to (left position of s) as text
+                set vW to (width of s) as text
+                set vH to (height of s) as text
+                return "OK|" & presPath & "|" & curSlide & "|SHAPE|" & vName & "|" & vLeft & "|" & vTop & "|" & vW & "|" & vH
+            on error
+                return "OK|" & presPath & "|" & curSlide & "|NONE"
+            end try
         else
             return "OK|" & presPath & "|" & curSlide & "|NONE"
         end if
@@ -194,17 +203,26 @@ def get_active_powerpoint_state(save_first: bool = False) -> dict:
         set w to active window
         set curSlide to slide index of (slide of view of w)
         set sel to selection of w
-        set selType to selection type of sel as text
+        set isShapeSel to false
+        try
+            if (selection type of sel is selection type shapes) or ((selection type of sel as text) is "selection type shapes") then
+                set isShapeSel to true
+            end if
+        end try
         
-        if selType is "selection type shapes" then
-            set sr to shape range of sel
-            set s to shape 1 of sr
-            set vName to name of s as text
-            set vTop to (top of s) as text
-            set vLeft to (left position of s) as text
-            set vW to (width of s) as text
-            set vH to (height of s) as text
-            return "OK|" & presPath & "|" & curSlide & "|SHAPE|" & vName & "|" & vLeft & "|" & vTop & "|" & vW & "|" & vH
+        if isShapeSel then
+            try
+                set sr to shape range of sel
+                set s to shape 1 of sr
+                set vName to name of s as text
+                set vTop to (top of s) as text
+                set vLeft to (left position of s) as text
+                set vW to (width of s) as text
+                set vH to (height of s) as text
+                return "OK|" & presPath & "|" & curSlide & "|SHAPE|" & vName & "|" & vLeft & "|" & vTop & "|" & vW & "|" & vH
+            on error
+                return "OK|" & presPath & "|" & curSlide & "|NONE"
+            end try
         else
             return "OK|" & presPath & "|" & curSlide & "|NONE"
         end if

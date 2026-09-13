@@ -270,6 +270,12 @@ class PowerPointIntegrationTests(unittest.TestCase):
             self.assertEqual(rep["status"], "success")
             self.assertEqual(rep["member"], "ppt/embeddings/oleObject1.bin")
 
+    def test_state_script_compilation(self):
+        from slidebridge.powerpoint import _STATE_SCRIPT_SOURCE, _get_compiled_script
+        compiled_path = _get_compiled_script("query_state_test", _STATE_SCRIPT_SOURCE)
+        self.assertIsNotNone(compiled_path)
+        self.assertTrue(compiled_path.is_file())
+
 
 class DefaultSessionParentTests(unittest.TestCase):
     """The session must live under the home folder so the guest can reach it.
