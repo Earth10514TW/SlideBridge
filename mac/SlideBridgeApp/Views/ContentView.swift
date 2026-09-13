@@ -46,14 +46,22 @@ struct ContentView: View {
                 Divider()
 
                 // Navigation List
-                List(AppTab.allCases, selection: $appState.selectedTab) { tab in
-                    NavigationLink(value: tab) {
+                // Rows are tagged with AppTab so the selection type matches
+                // `appState.selectedTab` exactly. A NavigationLink here would
+                // draw a second, offset selection highlight on top of the
+                // list's own one.
+                List(selection: $appState.selectedTab) {
+                    ForEach(AppTab.allCases) { tab in
                         Label(tab.title(using: lm), systemImage: tab.iconName)
                             .font(.system(size: 13, weight: .medium))
-                            .padding(.vertical, 8)
+                            .tag(tab)
                     }
                 }
                 .listStyle(.sidebar)
+                // Without this the sidebar list's top inset collapses to zero
+                // inside the VStack and the selection pill sits flush against
+                // the divider. 10pt matches the footer's vertical padding.
+                .padding(.top, 10)
 
                 Spacer()
 
@@ -91,16 +99,27 @@ struct ContentView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .automatic) {
+                    // A Picker nested in a Menu renders as an extra "Language"
+                    // submenu, forcing a second click. Flat buttons show the
+                    // three choices immediately, with a checkmark on the
+                    // current one.
                     Menu {
-                        Picker(lm.t(.language), selection: $lm.currentLanguage) {
-                            ForEach(AppLanguage.allCases) { lang in
-                                Text(lang.displayName).tag(lang)
+                        ForEach([AppLanguage.zhTW, AppLanguage.en, AppLanguage.system]) { lang in
+                            Button {
+                                lm.currentLanguage = lang
+                            } label: {
+                                if lm.currentLanguage == lang {
+                                    Label(lang.menuLabel(using: lm), systemImage: "checkmark")
+                                } else {
+                                    Text(lang.menuLabel(using: lm))
+                                }
                             }
                         }
                     } label: {
                         Label(lm.effectiveLanguage == .en ? "English" : "繁體中文", systemImage: "globe")
                             .font(.subheadline)
                     }
+                    .labelStyle(.titleAndIcon)
                     .help(lm.t(.language))
                 }
             }

@@ -29,21 +29,29 @@ struct SlideBridgeApp: App {
                 appState: appState
             )
             CommandMenu(languageManager.t(.languageMenu)) {
-                Button("繁體中文") {
-                    languageManager.currentLanguage = .zhTW
-                }
-                Button("English") {
-                    languageManager.currentLanguage = .en
-                }
+                languageMenuItem(.zhTW)
+                languageMenuItem(.en)
                 Divider()
-                Button(languageManager.t(.systemDefault)) {
-                    languageManager.currentLanguage = .system
-                }
+                languageMenuItem(.system)
             }
             CommandGroup(after: .help) {
                 Button(languageManager.t(.setupGuideMenu)) {
                     appState.resetAndShowOnboarding()
                 }
+            }
+        }
+    }
+
+    /// Menu bar counterpart of the toolbar language switcher. Uses the same
+    /// labels and the same checkmark so the two never drift apart.
+    private func languageMenuItem(_ lang: AppLanguage) -> some View {
+        Button {
+            languageManager.currentLanguage = lang
+        } label: {
+            if languageManager.currentLanguage == lang {
+                Label(lang.menuLabel(using: languageManager), systemImage: "checkmark")
+            } else {
+                Text(lang.menuLabel(using: languageManager))
             }
         }
     }
