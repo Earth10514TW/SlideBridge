@@ -301,11 +301,12 @@ dependency，`BUTTON` 就退回 **Windows 2000 經典外觀**——這才是「�
   24 = RT_MANIFEST）＋ `101 ICON "origin-bridge.ico"`。
   **101 必須等於 `main.cpp` 的 `kAppIconId`**；PE 裡第一個 ICON 資源同時是 Explorer
   與工作列用的圖示。
-- `origin-bridge.ico`：**沿用 macOS 的 `AppIcon.png`**，兩個平台同一個品牌記號。
-  單檔含 16/32/48/64/128/256 六種尺寸，共 **20,081 bytes**。
+- `origin-bridge.ico`：**採用專屬 Origin 橋接圖示**（區隔 macOS AppIcon，呈現圖表跨機橋接視覺）。
+  單檔含 16/32/48/64/128/256 六種尺寸，共 **31,031 bytes**。
+  來源透明原始圖保留於 `native/origin-bridge/origin-bridge.png`（1024×1024）。
 
 **圖示怎麼生的（要重做時照這個）**：來源是
-`mac/SlideBridgeApp/Resources/AppIcon.png`（1024×1024）。**16px 用全彩，其餘尺寸
+`native/origin-bridge/origin-bridge.png`（1024×1024 RGBA）。**16px 用全彩，其餘尺寸
 量化成 256 色調色盤 PNG**——這是體積的關鍵：256px 從 59,710 降到 8,881 bytes。
 直接用 Pillow 的 `save(format="ICO", sizes=[...])` 不量化會是 97,506 bytes。
 Pillow 裝在受管理的 venv：`/Users/earth/.workbuddy-ai/binaries/python/envs/default`。
