@@ -179,7 +179,7 @@ clang++ -std=c++17 -Wall -Wextra native/origin-bridge/save_sequence_test.cpp -o 
 2. **工具列語言選單多一層、且不顯示文字**：`Menu { Picker(...) }` 會把 Picker 變成以 Picker 標題為名的子選單，使用者得先點「Language」才看得到語言；而 macOS 工具列項目預設 icon-only，`Label` 的文字被吃掉，只剩地球圖示。改成扁平 `Button` 清單（三個選項直接展開、目前項目帶勾號），並補 `.labelStyle(.titleAndIcon)` 讓文字出現。
 3. **順手對齊**：`App.swift` 的選單列語言選單改用同一套 `menuLabel(using:)` 與勾號，避免兩處清單各自漂移。`AppLanguage.displayName`（DoctorView／OnboardingView 的 segmented picker 在用）維持原樣；新增的 `menuLabel` 只服務選單——語言名稱一律以自身語言呈現（介面語言看不懂也找得到），只有「跟隨系統」跟著介面語言走。
 
-驗證：`bash scripts/build_mac_app.sh` 編譯無警告，181 項 Python 測試全綠。
+驗證：`bash scripts/build_mac_app.sh` 編譯無警告，224 項 Python 測試全綠。
 
 > **重建 App 前一定要先結束 App。** `codesign` 在 App 執行中會失敗，回報
 > `resource fork, Finder information, or similar detritus not allowed` ——
@@ -191,7 +191,142 @@ clang++ -std=c++17 -Wall -Wextra native/origin-bridge/save_sequence_test.cpp -o 
 
 > 註：本機目前**無法**用截圖或 AX 做自動化巡檢——螢幕錄製未授權（`screencapture` 回報 `could not create image from display`），AX 樹也取不到節點。這兩個問題原本是靠 `.tmp/ui-check/ax` 巡檢的，要重新授權才能恢復。
 
-> 分支狀態：`feat/app-ui-optimization` 已以 fast-forward 合併回 `main`。此 repo 沒有遠端，全部為本機提交。待辦 #1 的開發從 `main` 另開分支進行。
+## Windows Helper 二進位瘦身（2026-09-13 已完成）
+
+`origin-bridge.exe` 從 **1,094,144 → 299,520 bytes（-72.6%）**。
+
+**怎麼找到的**：先用 `x86_64-w64-mingw32-size` 把程式碼和 runtime 分開量。`main.cpp` 自己的
+`.text` 只有 **74 KB**，但連結後的 exe `.text` 是 **1.07 MB** —— 也就是說 **93% 不是我們的程式碼**。
+再往上追，元兇是 `#include <iostream>`：整個檔案只為了用 `std::wcerr` 寫診斷訊息，
+卻把 libstdc++ 的 locale/iostream 整包拖進來。
+
+**改了什麼**：
+
+1. `main.cpp` 移除 `<iostream>`。`Log`/`LogHr` 改用 `swprintf_s` 組字串，再用
+   `WideCharToMultiByte(CP_UTF8)` + `WriteFile` 把整行寫到 `STD_ERROR_HANDLE`。
+   - 輸出通道不變（一樣是 stderr；`vm.py` 只取 exit code，stderr 是 relay 給人看的）。
+   - 副作用是好的：原本每個 `<<` 都可能是一次寫入，現在一行一次 syscall。
+   - **附帶好處**：libstdc++ 的 iostream static initialiser 不再於 `wmain` 前執行。
+     Helper 每次編輯都重新啟動，且 guest 是 Apple Silicon 上的 x64 模擬層，
+     少 72% 的東西要 map 和 translate。
+2. `scripts/build_origin_bridge.sh` 與 `native/origin-bridge/CMakeLists.txt` 加上
+   `-ffunction-sections -fdata-sections -Wl,--gc-sections`（純賺，不影響速度）。
+   1.09 MB → 299,520 bytes。
+
+**沒有動 `-O2`**：實測 `-Os -flto --gc-sections` 可以再降到 264,704 bytes（24%），
+但那是速度換大小，而且模擬層下哪個真的快**沒有實測過**，所以先不動。
+
+**驗證**：匯入的 DLL 與原本一致（只少了已不需要的 `api-ms-win-crt-filesystem` / `-time`），
+所有使用者可見字串仍在 PE 裡，224 項 Python 測試 + 4 項 C++ 持久化測試全綠。
+**已在 guest 端 `dir` 確認 exe 可見**（323,584 bytes / 16:17，與 Mac 端一致），
+但 helper 的實際執行與視覺效果仍要使用者手動在 VM 內確認。
+（更正：prlctl **可用**——`/usr/local/bin/prlctl` 是壞掉的 wrapper，要用
+`/Applications/Parallels Desktop.app/Contents/MacOS/prlctl`；`prlctl list` 預設只顯示
+running 的 VM，paused 的要 `list -a`。）`WriteStderr` 的 UTF-8 輸出要請使用者 smoke test 一次。
+
+**量測方式（可複驗）**：
+
+```sh
+export PATH="/opt/homebrew/bin:$PATH"   # 工具沙箱的 PATH 沒有 /opt/homebrew/bin
+x86_64-w64-mingw32-size dist/origin-bridge.exe
+x86_64-w64-mingw32-g++ -O2 -std=c++17 -municode -ffunction-sections -fdata-sections \
+  -c native/origin-bridge/main.cpp -o /tmp/main.o && x86_64-w64-mingw32-size /tmp/main.o
+```
+
+## Windows Helper 匯出往返與視窗介面（2026-09-13 已完成）
+
+### 1. LabTalk 往返次數
+
+`AutoExportOriginGraph` 原本是 `doc -s;` → SVG → PNG，每個都是一次獨立的
+`ExecuteLabTalk`（一次 COM 往返）。兩處改動：
+
+- **`doc -s;` 併進第一個 export 語句**（`"doc -s; expGraph ..."`）。LabTalk 兩種寫法都會
+  執行這兩句，所以純粹少一次 COM 往返，不改變執行順序。
+- **參數從 `bool isClosing` 換成 `enum class PreviewExport`**，因為兩個消費者要的檔案不同，
+  而「兩個都產」才是貴的地方：
+  - helper 自己的畫布只讀 `preview.png` / `preview.emf`（`ManualPreviewPath`），
+    **完全不讀 `preview.svg`**
+  - Mac 端偏好 `preview.svg` 並在回寫時用 resvg 點陣化，而回寫本來就會再匯出一次 SVG
+
+  所以 `WM_ACTIVATE` 的即時預覽改成 `CanvasRefresh`（只出 PNG），不再每次切回 Origin
+  都重算一次 SVG。`Save & Close` 維持 `Final`（SVG，PNG 只在 SVG 失敗時才做），
+  `Save & Refresh`／OLE `SaveObject`／`--probe` 維持 `Full`。
+
+最少 COM 往返次數（不含只在直接匯出失敗時才跑的 `doc -e P` 備援）：
+
+| 路徑 | 之前 | 之後 |
+| --- | ---: | ---: |
+| 即時畫布更新（WM_ACTIVATE） | 3 | 1 |
+| Save & Refresh | 3 | 2 |
+| Save & Close（SVG 成功時） | 2 | 1 |
+
+> 更正：`bc08c37` 的 commit message 把 WM_ACTIVATE 寫成 2 → 1。實際原本是三個獨立的
+> `ExecuteLabTalk`（`doc -s;`、SVG、PNG），所以是 **3 → 1**。程式碼沒問題，是訊息裡的
+> 數字寫少了。
+
+### 2. 視窗 DPI 與版面
+
+**根因**：exe 沒有 manifest、沒有 `.rsrc` 區段、也沒有任何 DPI 程式碼 →
+Windows 當它是 DPI-unaware，把整個視窗**位圖拉伸**。Parallels guest 對 Retina 主機
+通常跑 200% 縮放，所以按鈕文字與狀態列都是從 96 DPI 位圖放大來的，看起來就是模糊。
+
+**關鍵陷阱**：**只開 DPI 感知會更糟**。控制項是用硬編碼像素座標擺的，一旦變成 DPI-aware，
+在 2x 螢幕上會畫成一半大小。這兩件事必須一起做。
+
+- `EnableDpiAwareness()` 在 `wmain` 第一行執行（必須在任何視窗建立之前）。
+  優先用 `SetProcessDpiAwarenessContext` 的 per-monitor v2，取不到才退回 `SetProcessDPIAware()`。
+- 版面常數改成 96 DPI 設計單位，透過 `Scale()` 縮放；`dpi_` 在 `WM_CREATE` 取得。
+- `LayoutControls()` 是唯一幾何來源，由 `WM_CREATE`／`WM_SIZE`／`WM_DPICHANGED` 呼叫。
+  `WM_PAINT` 改讀 `previewRect_`，不再自己重算（原本畫布與控制項各算一份，會不一致）。
+- `WM_GETMINMAXINFO` 設最小尺寸（原本可以拖到預覽框反轉）。
+- 狀態列原本固定 980px，視窗一變窄就被裁掉；改成跟著 client 寬度。
+- 「Save and Close」改成 `BS_DEFPUSHBUTTON`（主要動作有預設按鈕外框）。
+  **副作用：Enter 也會觸發它。**
+
+編譯零警告（`-Wall -Wextra`）。二進位 300,544 bytes（原始的 27.5%）。
+**未經目視驗證** —— 這台機器碰不到 guest，版面要在 VM 上實際看過才算數。
+
+## Helper 視窗視覺樣式與圖示（2026-09-13 已完成）
+
+**根因跟上一節的 DPI 是同一個**：exe 完全沒有 manifest。沒有 common-controls v6 的
+dependency，`BUTTON` 就退回 **Windows 2000 經典外觀**——這才是「按鈕看起來很舊」的原因，
+跟畫得漂不漂亮無關。
+
+**新增檔案**（三個都在 `native/origin-bridge/`，都進 Git）：
+
+- `origin-bridge.manifest`：宣告 common-controls v6、per-monitor v2 DPI、
+  以及 Windows 10/11 的 `supportedOS`。`wmain` 裡的 runtime DPI 呼叫**保留**，
+  當作 manifest 被剝掉時的退路。
+- `resources.rc`：`1 24 "origin-bridge.manifest"`（1 = CREATEPROCESS_MANIFEST_RESOURCE_ID、
+  24 = RT_MANIFEST）＋ `101 ICON "origin-bridge.ico"`。
+  **101 必須等於 `main.cpp` 的 `kAppIconId`**；PE 裡第一個 ICON 資源同時是 Explorer
+  與工作列用的圖示。
+- `origin-bridge.ico`：**沿用 macOS 的 `AppIcon.png`**，兩個平台同一個品牌記號。
+  單檔含 16/32/48/64/128/256 六種尺寸，共 **20,081 bytes**。
+
+**圖示怎麼生的（要重做時照這個）**：來源是
+`mac/SlideBridgeApp/Resources/AppIcon.png`（1024×1024）。**16px 用全彩，其餘尺寸
+量化成 256 色調色盤 PNG**——這是體積的關鍵：256px 從 59,710 降到 8,881 bytes。
+直接用 Pillow 的 `save(format="ICO", sizes=[...])` 不量化會是 97,506 bytes。
+Pillow 裝在受管理的 venv：`/Users/earth/.workbuddy-ai/binaries/python/envs/default`。
+（`quantize()` 對 RGBA 只接受 `Image.FASTOCTREE`，`MEDIANCUT` 會直接報錯。）
+
+**其他改動**：
+
+- `WM_CTLCOLORSTATIC` 回傳視窗筆刷。原本狀態列畫在系統 3D-face 色上，
+  在視窗中間形成一條突兀的灰色橫帶。
+- 視窗底色與畫布邊框改成具名常數（`kWindowBackground` 等），色調往白靠，
+  讓預覽畫布成為視覺焦點。
+- `WM_PAINT` 原本**每次重繪都 CreateSolidBrush/DeleteObject 兩次**，改成
+  `WM_CREATE` 建立一次、解構子釋放。
+- **`WNDCLASSEXW` 取代 `WNDCLASSW`**：`hIconSm` 只存在於 Ex 形式，
+  用 `WNDCLASSW` 會編譯失敗。
+
+**體積**：323,584 bytes（原始的 29.6%）。比加圖示前的 300,544 多 23 KB，
+其中圖示 20 KB、manifest 與資源目錄約 3 KB。編譯零警告（`-Wall -Wextra`）。
+**視覺結果未經目視驗證** —— 這台機器碰不到 guest。
+
+> 分支狀態：所有特性分支（feat/app-ui-optimization、fix/ui-language-menu-and-sidebar-selection、feat/pptx-backup、perf/origin-bridge-exe-size）均已完成驗證並合併回 main。此 repo 沒有遠端，全部為本機提交。待辦 #1 的開發從 main 另開分支進行。
 
 ## 待辦
 

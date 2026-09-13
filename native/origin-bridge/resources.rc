@@ -1,0 +1,12 @@
+#include <windows.h>
+
+// 1  = CREATEPROCESS_MANIFEST_RESOURCE_ID
+// 24 = RT_MANIFEST
+//
+// Without this the process gets no common-controls v6 dependency, so every
+// BUTTON renders in the classic Windows 2000 style, and no DPI declaration.
+1 24 "origin-bridge.manifest"
+
+// The first ICON resource in the image is also the one Explorer and the
+// taskbar use, so the id must match kAppIconId in main.cpp.
+101 ICON "origin-bridge.ico"

@@ -22,7 +22,6 @@ namespace Gdiplus {
 #include <gdiplus.h>
 
 #include <cwchar>
-#include <iostream>
 #include <iterator>
 #include <string>
 #include <unordered_map>
@@ -40,6 +39,16 @@ constexpr int kSaveButton = 1002;
 constexpr int kSaveCloseButton = 1003;
 constexpr int kStatusControl = 1004;
 constexpr int kDiscardCloseButton = 1005;
+
+// Must match the ICON resource id in resources.rc.
+constexpr int kAppIconId = 101;
+
+// Window palette. Kept close to white so the preview canvas reads as the
+// focal point, with the surrounding chrome just slightly recessed.
+constexpr COLORREF kWindowBackground = RGB(250, 250, 250);
+constexpr COLORREF kCanvasBackground = RGB(255, 255, 255);
+constexpr COLORREF kCanvasBorder = RGB(214, 214, 214);
+constexpr COLORREF kStatusText = RGB(96, 96, 96);
 
 constexpr CLSID kPngEncoderClsid = {
     0x557cf406, 0x1a04, 0x11d3, {0x9a, 0x73, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e}};
@@ -102,22 +111,52 @@ std::wstring Win32ErrorText(HRESULT hr) {
   }
 }
 
-void Log(const std::wstring& message) {
+std::wstring TimestampPrefix() {
   SYSTEMTIME st;
   GetLocalTime(&st);
   wchar_t buf[32];
   swprintf_s(buf, L"[%02d:%02d:%02d.%03d] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-  std::wcerr << buf << message << std::endl;
+  return buf;
+}
+
+// Writes one UTF-8 line to stderr.
+//
+// This deliberately avoids <iostream>. Including it drags in the whole
+// libstdc++ locale/iostream machinery, which measured ~72% of this binary
+// (1.07 MB -> 0.30 MB of .text) -- and its static initialisers run before
+// wmain on every launch. The helper is started fresh for each edit, so that
+// startup cost is paid every single time. Staying on raw handles also writes
+// a whole line per call instead of one syscall per << operator.
+//
+// stderr is the right channel: the macOS side relays the guest's stderr to
+// the user's terminal and only inspects the exit code.
+void WriteStderr(const std::wstring& text) {
+  HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+  if (!err || err == INVALID_HANDLE_VALUE || text.empty()) {
+    return;
+  }
+  const int chars = static_cast<int>(text.size());
+  const int needed = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), chars,
+                                         nullptr, 0, nullptr, nullptr);
+  if (needed <= 0) {
+    return;
+  }
+  std::string utf8(static_cast<size_t>(needed), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, text.c_str(), chars,
+                      utf8.data(), needed, nullptr, nullptr);
+  DWORD written = 0;
+  WriteFile(err, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
+}
+
+void Log(const std::wstring& message) {
+  WriteStderr(TimestampPrefix() + message + L"\n");
 }
 
 void LogHr(const std::wstring& operation, HRESULT hr) {
-  SYSTEMTIME st;
-  GetLocalTime(&st);
-  wchar_t buf[32];
-  swprintf_s(buf, L"[%02d:%02d:%02d.%03d] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-  std::wcerr << buf << operation << L": HRESULT=0x" << std::hex
-             << static_cast<unsigned long>(hr) << std::dec << Win32ErrorText(hr)
-             << std::endl;
+  wchar_t code[16];
+  swprintf_s(code, L"0x%08lX", static_cast<unsigned long>(hr));
+  WriteStderr(TimestampPrefix() + operation + L": HRESULT=" + code +
+              Win32ErrorText(hr) + L"\n");
 }
 
 // CopyFileW with bFailIfExists, reporting the real failure reason. The previous
@@ -322,6 +361,27 @@ HRESULT CheckOriginClass(IStorage* storage, REFCLSID requested, CLSID* rootOut) 
       L", requested=" + GuidText(requested));
   return CLASS_E_CLASSNOTAVAILABLE;
 }
+
+// What a caller actually needs out of an Origin export.
+//
+// Two different consumers want two different files, and producing both is the
+// most expensive thing this helper does:
+//
+//   * the helper's own canvas reads preview.png / preview.emf (ManualPreviewPath)
+//   * the macOS side prefers preview.svg and rasterises it with resvg at 300 DPI
+//
+// Asking for both on every live refresh meant rasterising a full chart, and
+// serialising it to SVG, every time the user switched back from Origin --
+// for a file the canvas never reads. Each caller now asks for only what it
+// consumes.
+enum class PreviewExport {
+  // Live canvas refresh: PNG only. The SVG is re-exported at writeback.
+  CanvasRefresh,
+  // Explicit "Save & Refresh": both, so either consumer is satisfied.
+  Full,
+  // "Save and Close": SVG, with PNG only as a fallback if the SVG failed.
+  Final
+};
 
 class OriginHost final : public IOleClientSite,
                          public IOleInPlaceSite,
@@ -556,7 +616,8 @@ class OriginHost final : public IOleClientSite,
 
   // Drives Origin's internal expGraph command via COM Automation
   // to export the active graph window into the session folder.
-  bool AutoExportOriginGraph(const std::wstring& sessionDir, bool isClosing = false) {
+  bool AutoExportOriginGraph(const std::wstring& sessionDir,
+                             PreviewExport mode = PreviewExport::Full) {
     if (sessionDir.empty()) {
       return false;
     }
@@ -571,25 +632,48 @@ class OriginHost final : public IOleClientSite,
       if (ch == L'\\') ch = L'/';
     }
 
-    // Commit in-memory chart edits inside Origin
-    ExecuteLabTalk(L"doc -s;");
+    const bool wantSvg = (mode != PreviewExport::CanvasRefresh);
+    const bool wantPng = (mode != PreviewExport::Final);
 
-    // 1. Primary command: expGraph type:=svg (high-fidelity vector preview with natural transparency)
-    ExecuteLabTalk(L"expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace;");
-    if (!FileExists(sessionDir + L"\\preview.svg")) {
-      ExecuteLabTalk(L"doc -e P { expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace; };");
+    // `doc -s;` commits the in-memory chart edits inside Origin. It used to be
+    // its own ExecuteLabTalk call; folding it into whichever export statement
+    // runs first saves a whole COM round trip and changes nothing else.
+    bool commitPending = true;
+    auto withCommit = [&commitPending](const std::wstring& cmd) {
+      if (!commitPending) {
+        return cmd;
+      }
+      commitPending = false;
+      return L"doc -s; " + cmd;
+    };
+
+    // 1. Vector preview. This is the file that actually reaches the
+    //    presentation, because the macOS side rasterises preview.svg with
+    //    resvg. The helper's own canvas never reads it.
+    bool hasSvg = false;
+    if (wantSvg) {
+      const std::wstring svgCmd =
+          L"expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDirFwd +
+          L"\" overwrite:=replace;";
+      ExecuteLabTalk(withCommit(svgCmd));
+      if (!FileExists(sessionDir + L"\\preview.svg")) {
+        ExecuteLabTalk(L"doc -e P { " + svgCmd + L" };");
+      }
+      hasSvg = FileExists(sessionDir + L"\\preview.svg");
     }
 
-    bool hasSvg = FileExists(sessionDir + L"\\preview.svg");
-
-    // Optimization: When closing, if SVG export succeeded, skip redundant PNG rasterization.
-    // Mac side renders transparent 300 DPI PNG directly from preview.svg via resvg.
+    // 2. Raster preview, for the in-helper canvas or as a fallback when the
+    //    vector export failed. Origin rasterising a full chart is the slowest
+    //    step here, which is why CanvasRefresh asks for it alone and Final
+    //    skips it whenever the SVG came out.
     bool hasPng = false;
-    if (!isClosing || !hasSvg) {
-      // 2. Also export PNG for in-helper window canvas display or fallback
-      ExecuteLabTalk(L"expGraph type:=png filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace;");
+    if (wantPng || !hasSvg) {
+      const std::wstring pngCmd =
+          L"expGraph type:=png filename:=\"preview\" path:=\"" + sessionDirFwd +
+          L"\" overwrite:=replace;";
+      ExecuteLabTalk(withCommit(pngCmd));
       if (!FileExists(sessionDir + L"\\preview.png")) {
-        ExecuteLabTalk(L"doc -e P { expGraph type:=png filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace; };");
+        ExecuteLabTalk(L"doc -e P { " + pngCmd + L" };");
       }
       hasPng = FileExists(sessionDir + L"\\preview.png");
     }
@@ -602,7 +686,7 @@ class OriginHost final : public IOleClientSite,
       return true;
     }
 
-    Log(L"Origin COM Execute returned S_OK, but neither preview.svg nor preview.png was found.");
+    Log(L"Origin COM Execute returned S_OK, but no preview file was produced.");
     return false;
   }
 
@@ -686,7 +770,7 @@ class OriginHost final : public IOleClientSite,
   // finally-style path after IPersistStorage::Save has been entered.  The
   // guard prevents a server callback during Save from recursively entering
   // the same operation.
-  HRESULT Save(bool isClosing = false) {
+  HRESULT Save(PreviewExport mode = PreviewExport::Full) {
     if (saving_) {
       return RPC_E_CALL_REJECTED;
     }
@@ -724,7 +808,7 @@ class OriginHost final : public IOleClientSite,
       const std::wstring sessionDir = GetDirectoryOf(outputBasePath_);
       bool autoExported = false;
       if (!sessionDir.empty()) {
-        autoExported = AutoExportOriginGraph(sessionDir, isClosing);
+        autoExported = AutoExportOriginGraph(sessionDir, mode);
       }
 
       // Only run expensive OleDraw + GDI+ 300 DPI rasterization if COM auto-export failed
@@ -1250,6 +1334,48 @@ class OriginHost final : public IOleClientSite,
   DISPID cachedDispidExecute_ = DISPID_UNKNOWN;
 };
 
+// Without an explicit DPI mode Windows treats the process as DPI-unaware and
+// bitmap-stretches the whole window, so every control renders blurry on a
+// scaled display -- which is the normal case for a Parallels guest on a
+// Retina host. Per-monitor v2 is preferred; system awareness is the fallback.
+void EnableDpiAwareness() {
+  using SetDpiContextFn = BOOL(WINAPI*)(HANDLE);
+  HMODULE user32 = GetModuleHandleW(L"user32.dll");
+  if (user32) {
+    // Via void*: casting FARPROC straight to a differently-shaped function
+    // pointer trips -Wcast-function-type, which this project builds with.
+    auto setDpiContext = reinterpret_cast<SetDpiContextFn>(
+        reinterpret_cast<void*>(
+            GetProcAddress(user32, "SetProcessDpiAwarenessContext")));
+    // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, spelled out because the
+    // MinGW headers do not reliably declare it.
+    if (setDpiContext &&
+        setDpiContext(reinterpret_cast<HANDLE>(static_cast<INT_PTR>(-4)))) {
+      return;
+    }
+  }
+  SetProcessDPIAware();
+}
+
+// The DPI the window currently sits on. Every layout constant is scaled
+// through this so the controls keep their proportions on a scaled display.
+UINT WindowDpi(HWND window) {
+  HDC dc = GetDC(window);
+  if (!dc) {
+    return 96;
+  }
+  const int dpi = GetDeviceCaps(dc, LOGPIXELSX);
+  ReleaseDC(window, dc);
+  return dpi > 0 ? static_cast<UINT>(dpi) : 96;
+}
+
+// Pulls the entry matching the requested pixel size out of the multi-size
+// .ico embedded by resources.rc.
+HICON LoadAppIcon(HINSTANCE instance, int size) {
+  return static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(kAppIconId),
+                                       IMAGE_ICON, size, size, LR_DEFAULTCOLOR));
+}
+
 class EditApp final {
  public:
   EditApp(std::wstring output, IStorage* storage)
@@ -1276,16 +1402,37 @@ class EditApp final {
     if (discarded_) {
       DeleteFileW(output_.c_str());
     }
+    // Safe here: the message loop has returned, so the window is gone and the
+    // class brush is no longer in use.
+    for (HBRUSH* brush : {&backgroundBrush_, &canvasBrush_, &canvasBorderBrush_}) {
+      if (*brush) {
+        DeleteObject(*brush);
+        *brush = nullptr;
+      }
+    }
   }
 
   HRESULT CreateAndShow() {
-    WNDCLASSW wc{};
+    // Created once and owned by the app: the class brush erases the window on
+    // every resize, and WM_PAINT used to allocate two brushes per repaint.
+    backgroundBrush_ = CreateSolidBrush(kWindowBackground);
+    canvasBrush_ = CreateSolidBrush(kCanvasBackground);
+    canvasBorderBrush_ = CreateSolidBrush(kCanvasBorder);
+
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = &EditApp::WindowProc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.lpszClassName = kWindowClass;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-    RegisterClassW(&wc);
+    wc.hbrBackground = backgroundBrush_
+                           ? backgroundBrush_
+                           : reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    // Sized separately so Windows picks the right entry out of the .ico.
+    // hIconSm only exists on WNDCLASSEX, hence the Ex variant.
+    wc.hIcon = LoadAppIcon(wc.hInstance, GetSystemMetrics(SM_CXICON));
+    wc.hIconSm = LoadAppIcon(wc.hInstance, GetSystemMetrics(SM_CXSMICON));
+    RegisterClassExW(&wc);
 
     RECT desired{0, 0, 1024, 768};
     AdjustWindowRect(&desired, WS_OVERLAPPEDWINDOW, FALSE);
@@ -1335,24 +1482,33 @@ class EditApp final {
   LRESULT HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
       case WM_CREATE:
+        dpi_ = WindowDpi(window_);
         CreateControls();
         host_ = new OriginHost(window_, status_, storage_, GetBasePathWithoutExt(output_));
         return 0;
 
+      case WM_CTLCOLORSTATIC: {
+        // Without this the status line paints on the system 3D-face colour,
+        // which showed up as a stray grey band across the window.
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, kStatusText);
+        return reinterpret_cast<LRESULT>(backgroundBrush_);
+      }
+
       case WM_PAINT: {
         PAINTSTRUCT ps{};
         HDC hdc = BeginPaint(window_, &ps);
-        RECT client{};
-        GetClientRect(window_, &client);
-        RECT previewBox{ 16, 96, client.right - 16, client.bottom - 16 };
+        // Geometry comes from LayoutControls so the canvas and the controls
+        // can never disagree about where the preview box is.
+        RECT previewBox = previewRect_;
         if (previewBox.right > previewBox.left && previewBox.bottom > previewBox.top) {
-          HBRUSH bgBrush = CreateSolidBrush(RGB(245, 245, 245));
-          FillRect(hdc, &previewBox, bgBrush);
-          DeleteObject(bgBrush);
-
-          HBRUSH borderBrush = CreateSolidBrush(RGB(200, 200, 200));
-          FrameRect(hdc, &previewBox, borderBrush);
-          DeleteObject(borderBrush);
+          if (canvasBrush_) {
+            FillRect(hdc, &previewBox, canvasBrush_);
+          }
+          if (canvasBorderBrush_) {
+            FrameRect(hdc, &previewBox, canvasBorderBrush_);
+          }
 
           if (host_ && host_->HasObject()) {
             RECT innerBox{ previewBox.left + 8, previewBox.top + 8,
@@ -1370,8 +1526,35 @@ class EditApp final {
       }
 
       case WM_SIZE:
+        LayoutControls();
         InvalidateRect(window_, nullptr, TRUE);
         return 0;
+
+      case WM_GETMINMAXINFO: {
+        // Without this the window can be shrunk until the preview box inverts.
+        auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
+        RECT minRect{0, 0, Scale(kMinClientWidth), Scale(kMinClientHeight)};
+        AdjustWindowRect(&minRect, WS_OVERLAPPEDWINDOW, FALSE);
+        info->ptMinTrackSize.x = minRect.right - minRect.left;
+        info->ptMinTrackSize.y = minRect.bottom - minRect.top;
+        return 0;
+      }
+
+      case WM_DPICHANGED: {
+        // Only fires with per-monitor awareness; under the system-DPI fallback
+        // the dpi_ captured at WM_CREATE stands for the window's lifetime.
+        dpi_ = HIWORD(wParam);
+        auto* suggested = reinterpret_cast<RECT*>(lParam);
+        if (suggested) {
+          SetWindowPos(window_, nullptr, suggested->left, suggested->top,
+                       suggested->right - suggested->left,
+                       suggested->bottom - suggested->top,
+                       SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        LayoutControls();
+        InvalidateRect(window_, nullptr, TRUE);
+        return 0;
+      }
 
       case WM_SHOWWINDOW:
         if (wParam && !openAttempted_) {
@@ -1388,7 +1571,10 @@ class EditApp final {
               ULONGLONG now = GetTickCount64();
               if (now - lastAutoExportTick_ >= 1000) {
                 lastAutoExportTick_ = now;
-                if (host_->AutoExportOriginGraph(sessionDir)) {
+                // Canvas refresh only: the helper's canvas reads preview.png,
+                // and the SVG this used to re-export every time was never
+                // consumed until writeback, which exports it again anyway.
+                if (host_->AutoExportOriginGraph(sessionDir, PreviewExport::CanvasRefresh)) {
                   InvalidateRect(window_, nullptr, TRUE);
                   host_->SetStatus(L"Preview updated from Origin. Click 'Save and Close' when ready.");
                 }
@@ -1417,10 +1603,10 @@ class EditApp final {
               }
               return 0;
             case kSaveButton:
-              SaveObject();
+              SaveObject(PreviewExport::Full);
               return 0;
             case kSaveCloseButton:
-              if (SaveObject(true)) {
+              if (SaveObject(PreviewExport::Final)) {
                 CloseWindowAfterSave();
               }
               return 0;
@@ -1478,28 +1664,104 @@ class EditApp final {
     return DefWindowProcW(window_, message, wParam, lParam);
   }
 
+  // Layout is expressed in 96-DPI design units and scaled through Scale(), so
+  // the controls keep their proportions on a high-DPI display. The window is
+  // resizable, so a fixed pixel layout would strand the buttons and clip the
+  // status text the moment it is resized.
+  static constexpr int kPad = 16;
+  static constexpr int kButtonHeight = 32;
+  static constexpr int kButtonGap = 10;
+  static constexpr int kStatusHeight = 24;
+  static constexpr int kMinClientWidth = 720;
+  static constexpr int kMinClientHeight = 420;
+
+  int Scale(int value) const {
+    return MulDiv(value, static_cast<int>(dpi_), 96);
+  }
+
   void CreateControls() {
-    CreateWindowW(L"BUTTON", L"Open in Origin", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                  16, 16, 140, 32, window_,
-                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOpenButton)),
-                  GetModuleHandleW(nullptr), nullptr);
-    CreateWindowW(L"BUTTON", L"Save & Refresh (Ctrl+S)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                  166, 16, 180, 32, window_,
-                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveButton)),
-                  GetModuleHandleW(nullptr), nullptr);
-    CreateWindowW(L"BUTTON", L"Save and Close", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                  356, 16, 140, 32, window_,
-                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveCloseButton)),
-                  GetModuleHandleW(nullptr), nullptr);
+    openButton_ = CreateWindowW(
+        L"BUTTON", L"Open in Origin", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        0, 0, 0, 0, window_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOpenButton)),
+        GetModuleHandleW(nullptr), nullptr);
+    saveButton_ = CreateWindowW(
+        L"BUTTON", L"Save & Refresh (Ctrl+S)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        0, 0, 0, 0, window_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveButton)),
+        GetModuleHandleW(nullptr), nullptr);
+    // The default button ring marks the action the flow is steering towards.
+    saveCloseButton_ = CreateWindowW(
+        L"BUTTON", L"Save and Close", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+        0, 0, 0, 0, window_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveCloseButton)),
+        GetModuleHandleW(nullptr), nullptr);
     discardButton_ = CreateWindowW(
         L"BUTTON", L"Discard and Close", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        506, 16, 150, 32, window_,
+        0, 0, 0, 0, window_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDiscardCloseButton)),
         GetModuleHandleW(nullptr), nullptr);
-    status_ = CreateWindowW(L"STATIC", L"Loading...", WS_CHILD | WS_VISIBLE,
-                            16, 60, 980, 28, window_,
-                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusControl)),
-                            GetModuleHandleW(nullptr), nullptr);
+    status_ = CreateWindowW(
+        L"STATIC", L"Loading...", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
+        0, 0, 0, 0, window_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusControl)),
+        GetModuleHandleW(nullptr), nullptr);
+
+    // Placed after creation so the initial geometry has a single source.
+    LayoutControls();
+  }
+
+  void LayoutControls() {
+    if (!window_) {
+      return;
+    }
+    RECT client{};
+    GetClientRect(window_, &client);
+    const int clientWidth = static_cast<int>(client.right);
+    const int clientHeight = static_cast<int>(client.bottom);
+
+    const int pad = Scale(kPad);
+    const int buttonHeight = Scale(kButtonHeight);
+    const int gap = Scale(kButtonGap);
+    const int rowTop = Scale(16);
+
+    struct ButtonSpec {
+      HWND handle;
+      int width;
+    };
+    const ButtonSpec specs[] = {
+        {openButton_, Scale(140)},
+        {saveButton_, Scale(190)},
+        {saveCloseButton_, Scale(150)},
+        {discardButton_, Scale(160)},
+    };
+
+    int x = pad;
+    for (const ButtonSpec& spec : specs) {
+      if (!spec.handle) {
+        continue;
+      }
+      MoveWindow(spec.handle, x, rowTop, spec.width, buttonHeight, TRUE);
+      x += spec.width + gap;
+    }
+
+    const int statusTop = rowTop + buttonHeight + Scale(12);
+    if (status_) {
+      const int statusWidth = clientWidth - pad * 2;
+      MoveWindow(status_, pad, statusTop, statusWidth > 0 ? statusWidth : 0,
+                 Scale(kStatusHeight), TRUE);
+    }
+
+    previewRect_.left = pad;
+    previewRect_.top = statusTop + Scale(kStatusHeight) + Scale(12);
+    previewRect_.right = clientWidth - pad;
+    previewRect_.bottom = clientHeight - pad;
+    if (previewRect_.right < previewRect_.left) {
+      previewRect_.right = previewRect_.left;
+    }
+    if (previewRect_.bottom < previewRect_.top) {
+      previewRect_.bottom = previewRect_.top;
+    }
   }
 
   void SetStatus(const std::wstring& status) {
@@ -1509,12 +1771,12 @@ class EditApp final {
     }
   }
 
-  bool SaveObject(bool isClosing = false) {
+  bool SaveObject(PreviewExport mode = PreviewExport::Full) {
     if (!host_ || !host_->HasObject()) {
       SetStatus(L"No Origin object is loaded.");
       return true;
     }
-    HRESULT hr = host_->Save(isClosing);
+    HRESULT hr = host_->Save(mode);
     if (FAILED(hr)) {
       if (host_->PersistencePoisoned()) {
         SetStatus(L"Persistence is unusable; confirm Discard and Close to abandon this output copy.");
@@ -1566,13 +1828,21 @@ class EditApp final {
   std::wstring output_;
   IStorage* storage_ = nullptr;
   HWND window_ = nullptr;
-  HWND status_ = nullptr;
+  HWND openButton_ = nullptr;
+  HWND saveButton_ = nullptr;
+  HWND saveCloseButton_ = nullptr;
   HWND discardButton_ = nullptr;
+  HWND status_ = nullptr;
   OriginHost* host_ = nullptr;
   HRESULT exitCode_ = S_OK;
   bool openAttempted_ = false;
   bool discarded_ = false;
   ULONGLONG lastAutoExportTick_ = 0;
+  UINT dpi_ = 96;
+  RECT previewRect_{};
+  HBRUSH backgroundBrush_ = nullptr;
+  HBRUSH canvasBrush_ = nullptr;
+  HBRUSH canvasBorderBrush_ = nullptr;
 };
 
 HRESULT RunProbe(const std::wstring& input, const std::wstring& output,
@@ -1702,6 +1972,10 @@ void PrintUsage() {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+  // Has to happen before anything creates a window, otherwise the process is
+  // already locked into DPI-unaware bitmap stretching.
+  EnableDpiAwareness();
+
   HWND console = GetConsoleWindow();
   if (console) {
     ShowWindow(console, SW_HIDE);
