@@ -15,6 +15,8 @@ echo "=== Building SlideBridge.app (macOS SwiftUI Native) ==="
 echo "Project Root: $PROJECT_ROOT"
 echo "Target: $APP_BUNDLE"
 
+mkdir -p "$(dirname "$APP_BUNDLE")"
+rm -rf "$APP_BUNDLE"
 mkdir -p "$MACOS" "$RESOURCES"
 
 # 1. Info.plist
