@@ -233,6 +233,46 @@ Windows 當它是 DPI-unaware，把整個視窗**位圖拉伸**。Parallels gues
 編譯零警告（`-Wall -Wextra`）。二進位 300,544 bytes（原始的 27.5%）。
 **未經目視驗證** —— 這台機器碰不到 guest，版面要在 VM 上實際看過才算數。
 
+## Helper 視窗視覺樣式與圖示（2026-09-13 已完成）
+
+**根因跟上一節的 DPI 是同一個**：exe 完全沒有 manifest。沒有 common-controls v6 的
+dependency，`BUTTON` 就退回 **Windows 2000 經典外觀**——這才是「按鈕看起來很舊」的原因，
+跟畫得漂不漂亮無關。
+
+**新增檔案**（三個都在 `native/origin-bridge/`，都進 Git）：
+
+- `origin-bridge.manifest`：宣告 common-controls v6、per-monitor v2 DPI、
+  以及 Windows 10/11 的 `supportedOS`。`wmain` 裡的 runtime DPI 呼叫**保留**，
+  當作 manifest 被剝掉時的退路。
+- `resources.rc`：`1 24 "origin-bridge.manifest"`（1 = CREATEPROCESS_MANIFEST_RESOURCE_ID、
+  24 = RT_MANIFEST）＋ `101 ICON "origin-bridge.ico"`。
+  **101 必須等於 `main.cpp` 的 `kAppIconId`**；PE 裡第一個 ICON 資源同時是 Explorer
+  與工作列用的圖示。
+- `origin-bridge.ico`：**沿用 macOS 的 `AppIcon.png`**，兩個平台同一個品牌記號。
+  單檔含 16/32/48/64/128/256 六種尺寸，共 **20,081 bytes**。
+
+**圖示怎麼生的（要重做時照這個）**：來源是
+`mac/SlideBridgeApp/Resources/AppIcon.png`（1024×1024）。**16px 用全彩，其餘尺寸
+量化成 256 色調色盤 PNG**——這是體積的關鍵：256px 從 59,710 降到 8,881 bytes。
+直接用 Pillow 的 `save(format="ICO", sizes=[...])` 不量化會是 97,506 bytes。
+Pillow 裝在受管理的 venv：`/Users/earth/.workbuddy-ai/binaries/python/envs/default`。
+（`quantize()` 對 RGBA 只接受 `Image.FASTOCTREE`，`MEDIANCUT` 會直接報錯。）
+
+**其他改動**：
+
+- `WM_CTLCOLORSTATIC` 回傳視窗筆刷。原本狀態列畫在系統 3D-face 色上，
+  在視窗中間形成一條突兀的灰色橫帶。
+- 視窗底色與畫布邊框改成具名常數（`kWindowBackground` 等），色調往白靠，
+  讓預覽畫布成為視覺焦點。
+- `WM_PAINT` 原本**每次重繪都 CreateSolidBrush/DeleteObject 兩次**，改成
+  `WM_CREATE` 建立一次、解構子釋放。
+- **`WNDCLASSEXW` 取代 `WNDCLASSW`**：`hIconSm` 只存在於 Ex 形式，
+  用 `WNDCLASSW` 會編譯失敗。
+
+**體積**：323,584 bytes（原始的 29.6%）。比加圖示前的 300,544 多 23 KB，
+其中圖示 20 KB、manifest 與資源目錄約 3 KB。編譯零警告（`-Wall -Wextra`）。
+**視覺結果未經目視驗證** —— 這台機器碰不到 guest。
+
 > 分支狀態：`feat/app-ui-optimization` 已以 fast-forward 合併回 `main`。此 repo 沒有遠端，全部為本機提交。待辦 #1 的開發從 `main` 另開分支進行。
 
 ## 待辦
