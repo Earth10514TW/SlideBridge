@@ -141,7 +141,20 @@ clang++ -std=c++17 -Wall -Wextra native/origin-bridge/save_sequence_test.cpp -o 
    - 增加全域 `cleanErrorMessage` 安全網，確保任何情況下絕不向使用者展示原始 JSON 括號語法。
    - 修復 `scripts/build_mac_app.sh` codesign 遇 extended attributes / FinderInfo 的簽名清理問題。全部 181 項測試全綠通過。
 
-> 分支狀態：`feat/app-ui-optimization` 已以 fast-forward 合併回 `main`（`main` = `f9c75d7`），上述四項優化現已在 `main` 上。此 repo 沒有遠端，全部為本機提交。待辦 #1 的開發從 `main` 另開分支進行。
+## 側邊欄選取與工具列語言選單修正（2026-09-13 已完成）
+
+回報的兩個介面問題都出在 `Views/ContentView.swift`：
+
+1. **側邊欄出現雙層選取高亮**：原本是 `List(AppTab.allCases, selection:)` 裡面再包一層 `NavigationLink(value:)`。`AppTab.id` 是 `String`（rawValue）而 `selection` 的型別是 `AppTab`，兩者對不上，List 自己的選取畫不出來，只剩 NavigationLink 的高亮，兩層互相錯位成疊影。改成 `ForEach` + `.tag(tab)` 讓型別對齊，並移除 row 上多餘的 `.padding(.vertical, 8)`（它把列撐高，選取藥丸跟著變胖）。
+   - 全專案沒有任何 `navigationDestination`／`NavigationPath`／`NavigationStack`，detail 區塊本來就是 `switch appState.selectedTab` 驅動，所以那個 `NavigationLink` 是純空轉，移除不影響導覽。
+2. **工具列語言選單多一層、且不顯示文字**：`Menu { Picker(...) }` 會把 Picker 變成以 Picker 標題為名的子選單，使用者得先點「Language」才看得到語言；而 macOS 工具列項目預設 icon-only，`Label` 的文字被吃掉，只剩地球圖示。改成扁平 `Button` 清單（三個選項直接展開、目前項目帶勾號），並補 `.labelStyle(.titleAndIcon)` 讓文字出現。
+3. **順手對齊**：`App.swift` 的選單列語言選單改用同一套 `menuLabel(using:)` 與勾號，避免兩處清單各自漂移。`AppLanguage.displayName`（DoctorView／OnboardingView 的 segmented picker 在用）維持原樣；新增的 `menuLabel` 只服務選單——語言名稱一律以自身語言呈現（介面語言看不懂也找得到），只有「跟隨系統」跟著介面語言走。
+
+驗證：`bash scripts/build_mac_app.sh` 編譯無警告，181 項 Python 測試全綠。
+
+> 註：本機目前**無法**用截圖或 AX 做自動化巡檢——螢幕錄製未授權（`screencapture` 回報 `could not create image from display`），AX 樹也取不到節點。這兩個問題原本是靠 `.tmp/ui-check/ax` 巡檢的，要重新授權才能恢復。
+
+> 分支狀態：`feat/app-ui-optimization` 已以 fast-forward 合併回 `main`。此 repo 沒有遠端，全部為本機提交。待辦 #1 的開發從 `main` 另開分支進行。
 
 ## 待辦
 

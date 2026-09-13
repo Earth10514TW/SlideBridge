@@ -15,6 +15,20 @@ public enum AppLanguage: String, CaseIterable, Identifiable {
         case .en: return "English"
         }
     }
+
+    /// Short label for the language switcher.
+    ///
+    /// Language names stay in their own language so they remain findable even
+    /// when the interface is in a language the user cannot read. Only the
+    /// "follow system" entry is localized, because it is not a language name.
+    @MainActor
+    public func menuLabel(using lm: LanguageManager) -> String {
+        switch self {
+        case .system: return lm.t(.systemDefault)
+        case .zhTW: return "繁體中文"
+        case .en: return "English"
+        }
+    }
 }
 
 public enum L10nKey {
