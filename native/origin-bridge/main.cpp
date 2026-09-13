@@ -1324,6 +1324,41 @@ class OriginHost final : public IOleClientSite,
   DISPID cachedDispidExecute_ = DISPID_UNKNOWN;
 };
 
+// Without an explicit DPI mode Windows treats the process as DPI-unaware and
+// bitmap-stretches the whole window, so every control renders blurry on a
+// scaled display -- which is the normal case for a Parallels guest on a
+// Retina host. Per-monitor v2 is preferred; system awareness is the fallback.
+void EnableDpiAwareness() {
+  using SetDpiContextFn = BOOL(WINAPI*)(HANDLE);
+  HMODULE user32 = GetModuleHandleW(L"user32.dll");
+  if (user32) {
+    // Via void*: casting FARPROC straight to a differently-shaped function
+    // pointer trips -Wcast-function-type, which this project builds with.
+    auto setDpiContext = reinterpret_cast<SetDpiContextFn>(
+        reinterpret_cast<void*>(
+            GetProcAddress(user32, "SetProcessDpiAwarenessContext")));
+    // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, spelled out because the
+    // MinGW headers do not reliably declare it.
+    if (setDpiContext &&
+        setDpiContext(reinterpret_cast<HANDLE>(static_cast<INT_PTR>(-4)))) {
+      return;
+    }
+  }
+  SetProcessDPIAware();
+}
+
+// The DPI the window currently sits on. Every layout constant is scaled
+// through this so the controls keep their proportions on a scaled display.
+UINT WindowDpi(HWND window) {
+  HDC dc = GetDC(window);
+  if (!dc) {
+    return 96;
+  }
+  const int dpi = GetDeviceCaps(dc, LOGPIXELSX);
+  ReleaseDC(window, dc);
+  return dpi > 0 ? static_cast<UINT>(dpi) : 96;
+}
+
 class EditApp final {
  public:
   EditApp(std::wstring output, IStorage* storage)
@@ -1409,6 +1444,7 @@ class EditApp final {
   LRESULT HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
       case WM_CREATE:
+        dpi_ = WindowDpi(window_);
         CreateControls();
         host_ = new OriginHost(window_, status_, storage_, GetBasePathWithoutExt(output_));
         return 0;
@@ -1416,9 +1452,9 @@ class EditApp final {
       case WM_PAINT: {
         PAINTSTRUCT ps{};
         HDC hdc = BeginPaint(window_, &ps);
-        RECT client{};
-        GetClientRect(window_, &client);
-        RECT previewBox{ 16, 96, client.right - 16, client.bottom - 16 };
+        // Geometry comes from LayoutControls so the canvas and the controls
+        // can never disagree about where the preview box is.
+        RECT previewBox = previewRect_;
         if (previewBox.right > previewBox.left && previewBox.bottom > previewBox.top) {
           HBRUSH bgBrush = CreateSolidBrush(RGB(245, 245, 245));
           FillRect(hdc, &previewBox, bgBrush);
@@ -1444,8 +1480,35 @@ class EditApp final {
       }
 
       case WM_SIZE:
+        LayoutControls();
         InvalidateRect(window_, nullptr, TRUE);
         return 0;
+
+      case WM_GETMINMAXINFO: {
+        // Without this the window can be shrunk until the preview box inverts.
+        auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
+        RECT minRect{0, 0, Scale(kMinClientWidth), Scale(kMinClientHeight)};
+        AdjustWindowRect(&minRect, WS_OVERLAPPEDWINDOW, FALSE);
+        info->ptMinTrackSize.x = minRect.right - minRect.left;
+        info->ptMinTrackSize.y = minRect.bottom - minRect.top;
+        return 0;
+      }
+
+      case WM_DPICHANGED: {
+        // Only fires with per-monitor awareness; under the system-DPI fallback
+        // the dpi_ captured at WM_CREATE stands for the window's lifetime.
+        dpi_ = HIWORD(wParam);
+        auto* suggested = reinterpret_cast<RECT*>(lParam);
+        if (suggested) {
+          SetWindowPos(window_, nullptr, suggested->left, suggested->top,
+                       suggested->right - suggested->left,
+                       suggested->bottom - suggested->top,
+                       SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        LayoutControls();
+        InvalidateRect(window_, nullptr, TRUE);
+        return 0;
+      }
 
       case WM_SHOWWINDOW:
         if (wParam && !openAttempted_) {
@@ -1555,28 +1618,104 @@ class EditApp final {
     return DefWindowProcW(window_, message, wParam, lParam);
   }
 
+  // Layout is expressed in 96-DPI design units and scaled through Scale(), so
+  // the controls keep their proportions on a high-DPI display. The window is
+  // resizable, so a fixed pixel layout would strand the buttons and clip the
+  // status text the moment it is resized.
+  static constexpr int kPad = 16;
+  static constexpr int kButtonHeight = 32;
+  static constexpr int kButtonGap = 10;
+  static constexpr int kStatusHeight = 24;
+  static constexpr int kMinClientWidth = 720;
+  static constexpr int kMinClientHeight = 420;
+
+  int Scale(int value) const {
+    return MulDiv(value, static_cast<int>(dpi_), 96);
+  }
+
   void CreateControls() {
-    CreateWindowW(L"BUTTON", L"Open in Origin", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                  16, 16, 140, 32, window_,
-                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOpenButton)),
-                  GetModuleHandleW(nullptr), nullptr);
-    CreateWindowW(L"BUTTON", L"Save & Refresh (Ctrl+S)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                  166, 16, 180, 32, window_,
-                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveButton)),
-                  GetModuleHandleW(nullptr), nullptr);
-    CreateWindowW(L"BUTTON", L"Save and Close", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                  356, 16, 140, 32, window_,
-                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveCloseButton)),
-                  GetModuleHandleW(nullptr), nullptr);
+    openButton_ = CreateWindowW(
+        L"BUTTON", L"Open in Origin", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        0, 0, 0, 0, window_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOpenButton)),
+        GetModuleHandleW(nullptr), nullptr);
+    saveButton_ = CreateWindowW(
+        L"BUTTON", L"Save & Refresh (Ctrl+S)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        0, 0, 0, 0, window_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveButton)),
+        GetModuleHandleW(nullptr), nullptr);
+    // The default button ring marks the action the flow is steering towards.
+    saveCloseButton_ = CreateWindowW(
+        L"BUTTON", L"Save and Close", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+        0, 0, 0, 0, window_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveCloseButton)),
+        GetModuleHandleW(nullptr), nullptr);
     discardButton_ = CreateWindowW(
         L"BUTTON", L"Discard and Close", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        506, 16, 150, 32, window_,
+        0, 0, 0, 0, window_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDiscardCloseButton)),
         GetModuleHandleW(nullptr), nullptr);
-    status_ = CreateWindowW(L"STATIC", L"Loading...", WS_CHILD | WS_VISIBLE,
-                            16, 60, 980, 28, window_,
-                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusControl)),
-                            GetModuleHandleW(nullptr), nullptr);
+    status_ = CreateWindowW(
+        L"STATIC", L"Loading...", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
+        0, 0, 0, 0, window_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusControl)),
+        GetModuleHandleW(nullptr), nullptr);
+
+    // Placed after creation so the initial geometry has a single source.
+    LayoutControls();
+  }
+
+  void LayoutControls() {
+    if (!window_) {
+      return;
+    }
+    RECT client{};
+    GetClientRect(window_, &client);
+    const int clientWidth = static_cast<int>(client.right);
+    const int clientHeight = static_cast<int>(client.bottom);
+
+    const int pad = Scale(kPad);
+    const int buttonHeight = Scale(kButtonHeight);
+    const int gap = Scale(kButtonGap);
+    const int rowTop = Scale(16);
+
+    struct ButtonSpec {
+      HWND handle;
+      int width;
+    };
+    const ButtonSpec specs[] = {
+        {openButton_, Scale(140)},
+        {saveButton_, Scale(190)},
+        {saveCloseButton_, Scale(150)},
+        {discardButton_, Scale(160)},
+    };
+
+    int x = pad;
+    for (const ButtonSpec& spec : specs) {
+      if (!spec.handle) {
+        continue;
+      }
+      MoveWindow(spec.handle, x, rowTop, spec.width, buttonHeight, TRUE);
+      x += spec.width + gap;
+    }
+
+    const int statusTop = rowTop + buttonHeight + Scale(12);
+    if (status_) {
+      const int statusWidth = clientWidth - pad * 2;
+      MoveWindow(status_, pad, statusTop, statusWidth > 0 ? statusWidth : 0,
+                 Scale(kStatusHeight), TRUE);
+    }
+
+    previewRect_.left = pad;
+    previewRect_.top = statusTop + Scale(kStatusHeight) + Scale(12);
+    previewRect_.right = clientWidth - pad;
+    previewRect_.bottom = clientHeight - pad;
+    if (previewRect_.right < previewRect_.left) {
+      previewRect_.right = previewRect_.left;
+    }
+    if (previewRect_.bottom < previewRect_.top) {
+      previewRect_.bottom = previewRect_.top;
+    }
   }
 
   void SetStatus(const std::wstring& status) {
@@ -1643,13 +1782,18 @@ class EditApp final {
   std::wstring output_;
   IStorage* storage_ = nullptr;
   HWND window_ = nullptr;
-  HWND status_ = nullptr;
+  HWND openButton_ = nullptr;
+  HWND saveButton_ = nullptr;
+  HWND saveCloseButton_ = nullptr;
   HWND discardButton_ = nullptr;
+  HWND status_ = nullptr;
   OriginHost* host_ = nullptr;
   HRESULT exitCode_ = S_OK;
   bool openAttempted_ = false;
   bool discarded_ = false;
   ULONGLONG lastAutoExportTick_ = 0;
+  UINT dpi_ = 96;
+  RECT previewRect_{};
 };
 
 HRESULT RunProbe(const std::wstring& input, const std::wstring& output,
@@ -1779,6 +1923,10 @@ void PrintUsage() {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+  // Has to happen before anything creates a window, otherwise the process is
+  // already locked into DPI-unaware bitmap stretching.
+  EnableDpiAwareness();
+
   HWND console = GetConsoleWindow();
   if (console) {
     ShowWindow(console, SW_HIDE);
