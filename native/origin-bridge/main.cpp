@@ -352,6 +352,27 @@ HRESULT CheckOriginClass(IStorage* storage, REFCLSID requested, CLSID* rootOut) 
   return CLASS_E_CLASSNOTAVAILABLE;
 }
 
+// What a caller actually needs out of an Origin export.
+//
+// Two different consumers want two different files, and producing both is the
+// most expensive thing this helper does:
+//
+//   * the helper's own canvas reads preview.png / preview.emf (ManualPreviewPath)
+//   * the macOS side prefers preview.svg and rasterises it with resvg at 300 DPI
+//
+// Asking for both on every live refresh meant rasterising a full chart, and
+// serialising it to SVG, every time the user switched back from Origin --
+// for a file the canvas never reads. Each caller now asks for only what it
+// consumes.
+enum class PreviewExport {
+  // Live canvas refresh: PNG only. The SVG is re-exported at writeback.
+  CanvasRefresh,
+  // Explicit "Save & Refresh": both, so either consumer is satisfied.
+  Full,
+  // "Save and Close": SVG, with PNG only as a fallback if the SVG failed.
+  Final
+};
+
 class OriginHost final : public IOleClientSite,
                          public IOleInPlaceSite,
                          public IOleInPlaceFrame,
@@ -585,7 +606,8 @@ class OriginHost final : public IOleClientSite,
 
   // Drives Origin's internal expGraph command via COM Automation
   // to export the active graph window into the session folder.
-  bool AutoExportOriginGraph(const std::wstring& sessionDir, bool isClosing = false) {
+  bool AutoExportOriginGraph(const std::wstring& sessionDir,
+                             PreviewExport mode = PreviewExport::Full) {
     if (sessionDir.empty()) {
       return false;
     }
@@ -600,25 +622,48 @@ class OriginHost final : public IOleClientSite,
       if (ch == L'\\') ch = L'/';
     }
 
-    // Commit in-memory chart edits inside Origin
-    ExecuteLabTalk(L"doc -s;");
+    const bool wantSvg = (mode != PreviewExport::CanvasRefresh);
+    const bool wantPng = (mode != PreviewExport::Final);
 
-    // 1. Primary command: expGraph type:=svg (high-fidelity vector preview with natural transparency)
-    ExecuteLabTalk(L"expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace;");
-    if (!FileExists(sessionDir + L"\\preview.svg")) {
-      ExecuteLabTalk(L"doc -e P { expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace; };");
+    // `doc -s;` commits the in-memory chart edits inside Origin. It used to be
+    // its own ExecuteLabTalk call; folding it into whichever export statement
+    // runs first saves a whole COM round trip and changes nothing else.
+    bool commitPending = true;
+    auto withCommit = [&commitPending](const std::wstring& cmd) {
+      if (!commitPending) {
+        return cmd;
+      }
+      commitPending = false;
+      return L"doc -s; " + cmd;
+    };
+
+    // 1. Vector preview. This is the file that actually reaches the
+    //    presentation, because the macOS side rasterises preview.svg with
+    //    resvg. The helper's own canvas never reads it.
+    bool hasSvg = false;
+    if (wantSvg) {
+      const std::wstring svgCmd =
+          L"expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDirFwd +
+          L"\" overwrite:=replace;";
+      ExecuteLabTalk(withCommit(svgCmd));
+      if (!FileExists(sessionDir + L"\\preview.svg")) {
+        ExecuteLabTalk(L"doc -e P { " + svgCmd + L" };");
+      }
+      hasSvg = FileExists(sessionDir + L"\\preview.svg");
     }
 
-    bool hasSvg = FileExists(sessionDir + L"\\preview.svg");
-
-    // Optimization: When closing, if SVG export succeeded, skip redundant PNG rasterization.
-    // Mac side renders transparent 300 DPI PNG directly from preview.svg via resvg.
+    // 2. Raster preview, for the in-helper canvas or as a fallback when the
+    //    vector export failed. Origin rasterising a full chart is the slowest
+    //    step here, which is why CanvasRefresh asks for it alone and Final
+    //    skips it whenever the SVG came out.
     bool hasPng = false;
-    if (!isClosing || !hasSvg) {
-      // 2. Also export PNG for in-helper window canvas display or fallback
-      ExecuteLabTalk(L"expGraph type:=png filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace;");
+    if (wantPng || !hasSvg) {
+      const std::wstring pngCmd =
+          L"expGraph type:=png filename:=\"preview\" path:=\"" + sessionDirFwd +
+          L"\" overwrite:=replace;";
+      ExecuteLabTalk(withCommit(pngCmd));
       if (!FileExists(sessionDir + L"\\preview.png")) {
-        ExecuteLabTalk(L"doc -e P { expGraph type:=png filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace; };");
+        ExecuteLabTalk(L"doc -e P { " + pngCmd + L" };");
       }
       hasPng = FileExists(sessionDir + L"\\preview.png");
     }
@@ -631,7 +676,7 @@ class OriginHost final : public IOleClientSite,
       return true;
     }
 
-    Log(L"Origin COM Execute returned S_OK, but neither preview.svg nor preview.png was found.");
+    Log(L"Origin COM Execute returned S_OK, but no preview file was produced.");
     return false;
   }
 
@@ -715,7 +760,7 @@ class OriginHost final : public IOleClientSite,
   // finally-style path after IPersistStorage::Save has been entered.  The
   // guard prevents a server callback during Save from recursively entering
   // the same operation.
-  HRESULT Save(bool isClosing = false) {
+  HRESULT Save(PreviewExport mode = PreviewExport::Full) {
     if (saving_) {
       return RPC_E_CALL_REJECTED;
     }
@@ -753,7 +798,7 @@ class OriginHost final : public IOleClientSite,
       const std::wstring sessionDir = GetDirectoryOf(outputBasePath_);
       bool autoExported = false;
       if (!sessionDir.empty()) {
-        autoExported = AutoExportOriginGraph(sessionDir, isClosing);
+        autoExported = AutoExportOriginGraph(sessionDir, mode);
       }
 
       // Only run expensive OleDraw + GDI+ 300 DPI rasterization if COM auto-export failed
@@ -1417,7 +1462,10 @@ class EditApp final {
               ULONGLONG now = GetTickCount64();
               if (now - lastAutoExportTick_ >= 1000) {
                 lastAutoExportTick_ = now;
-                if (host_->AutoExportOriginGraph(sessionDir)) {
+                // Canvas refresh only: the helper's canvas reads preview.png,
+                // and the SVG this used to re-export every time was never
+                // consumed until writeback, which exports it again anyway.
+                if (host_->AutoExportOriginGraph(sessionDir, PreviewExport::CanvasRefresh)) {
                   InvalidateRect(window_, nullptr, TRUE);
                   host_->SetStatus(L"Preview updated from Origin. Click 'Save and Close' when ready.");
                 }
@@ -1446,10 +1494,10 @@ class EditApp final {
               }
               return 0;
             case kSaveButton:
-              SaveObject();
+              SaveObject(PreviewExport::Full);
               return 0;
             case kSaveCloseButton:
-              if (SaveObject(true)) {
+              if (SaveObject(PreviewExport::Final)) {
                 CloseWindowAfterSave();
               }
               return 0;
@@ -1538,12 +1586,12 @@ class EditApp final {
     }
   }
 
-  bool SaveObject(bool isClosing = false) {
+  bool SaveObject(PreviewExport mode = PreviewExport::Full) {
     if (!host_ || !host_->HasObject()) {
       SetStatus(L"No Origin object is loaded.");
       return true;
     }
-    HRESULT hr = host_->Save(isClosing);
+    HRESULT hr = host_->Save(mode);
     if (FAILED(hr)) {
       if (host_->PersistencePoisoned()) {
         SetStatus(L"Persistence is unusable; confirm Discard and Close to abandon this output copy.");
