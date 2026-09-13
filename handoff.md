@@ -141,7 +141,46 @@ clang++ -std=c++17 -Wall -Wextra native/origin-bridge/save_sequence_test.cpp -o 
    - 增加全域 `cleanErrorMessage` 安全網，確保任何情況下絕不向使用者展示原始 JSON 括號語法。
    - 修復 `scripts/build_mac_app.sh` codesign 遇 extended attributes / FinderInfo 的簽名清理問題。全部 181 項測試全綠通過。
 
-> 分支狀態：`feat/app-ui-optimization` 已以 fast-forward 合併回 `main`（`main` = `f9c75d7`），上述四項優化現已在 `main` 上。此 repo 沒有遠端，全部為本機提交。待辦 #1 的開發從 `main` 另開分支進行。
+## Windows Helper 二進位瘦身（2026-09-13 已完成）
+
+`origin-bridge.exe` 從 **1,094,144 → 299,520 bytes（-72.6%）**。
+
+**怎麼找到的**：先用 `x86_64-w64-mingw32-size` 把程式碼和 runtime 分開量。`main.cpp` 自己的
+`.text` 只有 **74 KB**，但連結後的 exe `.text` 是 **1.07 MB** —— 也就是說 **93% 不是我們的程式碼**。
+再往上追，元兇是 `#include <iostream>`：整個檔案只為了用 `std::wcerr` 寫診斷訊息，
+卻把 libstdc++ 的 locale/iostream 整包拖進來。
+
+**改了什麼**：
+
+1. `main.cpp` 移除 `<iostream>`。`Log`/`LogHr` 改用 `swprintf_s` 組字串，再用
+   `WideCharToMultiByte(CP_UTF8)` + `WriteFile` 把整行寫到 `STD_ERROR_HANDLE`。
+   - 輸出通道不變（一樣是 stderr；`vm.py` 只取 exit code，stderr 是 relay 給人看的）。
+   - 副作用是好的：原本每個 `<<` 都可能是一次寫入，現在一行一次 syscall。
+   - **附帶好處**：libstdc++ 的 iostream static initialiser 不再於 `wmain` 前執行。
+     Helper 每次編輯都重新啟動，且 guest 是 Apple Silicon 上的 x64 模擬層，
+     少 72% 的東西要 map 和 translate。
+2. `scripts/build_origin_bridge.sh` 與 `native/origin-bridge/CMakeLists.txt` 加上
+   `-ffunction-sections -fdata-sections -Wl,--gc-sections`（純賺，不影響速度）。
+   1.09 MB → 299,520 bytes。
+
+**沒有動 `-O2`**：實測 `-Os -flto --gc-sections` 可以再降到 264,704 bytes（24%），
+但那是速度換大小，而且模擬層下哪個真的快**沒有實測過**，所以先不動。
+
+**驗證**：匯入的 DLL 與原本一致（只少了已不需要的 `api-ms-win-crt-filesystem` / `-time`），
+所有使用者可見字串仍在 PE 裡，181 項 Python 測試 + 4 項 C++ 持久化測試全綠。
+**但沒有在 VM 上實跑過**（Parallels CLI 在工具沙箱內被擋），
+`WriteStderr` 的 UTF-8 輸出要請使用者在真機 smoke test 一次。
+
+**量測方式（可複驗）**：
+
+```sh
+export PATH="/opt/homebrew/bin:$PATH"   # 工具沙箱的 PATH 沒有 /opt/homebrew/bin
+x86_64-w64-mingw32-size dist/origin-bridge.exe
+x86_64-w64-mingw32-g++ -O2 -std=c++17 -municode -ffunction-sections -fdata-sections \
+  -c native/origin-bridge/main.cpp -o /tmp/main.o && x86_64-w64-mingw32-size /tmp/main.o
+```
+
+> 分支狀態：`feat/app-ui-optimization` 已以 fast-forward 合併回 `main`。此 repo 沒有遠端，全部為本機提交。待辦 #1 的開發從 `main` 另開分支進行。
 
 ## 待辦
 
