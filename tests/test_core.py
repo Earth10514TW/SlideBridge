@@ -347,6 +347,42 @@ class CoreTests(unittest.TestCase):
             with self.assertRaisesRegex(SlideBridgeError, "resvg executable not found"):
                 repair(self.source, self.output)
 
+    def test_emf_conversion_failure_includes_stderr_detail(self):
+        def fake_run(cmd, **kwargs):
+            if "emf2svg-conv" in cmd[0]:
+                return subprocess.CompletedProcess(cmd, 1, "", "dyld: Library not loaded: @rpath/libemf2svg.1.dylib")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with patch('slidebridge.core.subprocess.run', side_effect=fake_run):
+            with self.assertRaises(SlideBridgeError) as cm:
+                repair(self.source, self.output)
+            self.assertIn("EMF to SVG conversion failed for ppt/media/image1.emf", str(cm.exception))
+            self.assertIn("dyld: Library not loaded: @rpath/libemf2svg.1.dylib", str(cm.exception))
+
+    def test_emf_converter_fallback_on_broken_local_bin(self):
+        def which_with_local(cmd):
+            if cmd == "emf2svg-conv":
+                return "/opt/homebrew/bin/emf2svg-conv"
+            if "resvg" in cmd:
+                return "/mock/bin/resvg"
+            return "/repo/bin/emf2svg-conv"
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "/repo/bin/emf2svg-conv":
+                return subprocess.CompletedProcess(cmd, -6, "", "dyld: Library not loaded")
+            if "emf2svg-conv" in cmd[0]:
+                out_svg = cmd[cmd.index("-o") + 1]
+                Path(out_svg).write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"/>')
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            out_png = cmd[2]
+            Path(out_png).write_bytes(PNG)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with patch('slidebridge.core.shutil.which', side_effect=which_with_local), \
+             patch('slidebridge.core.subprocess.run', side_effect=fake_run):
+            repair(self.source, self.output)
+            self.assertTrue(self.output.is_file())
+
 
 if __name__ == '__main__':
     unittest.main()

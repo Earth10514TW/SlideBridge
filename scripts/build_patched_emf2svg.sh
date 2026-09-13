@@ -35,7 +35,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 fi
 
 echo "==> Configuring patched libemf2svg …"
-rm -rf "${BUILD}"
+rm -rf "${BUILD}" "${SRC}/deps"
 mkdir -p "${BUILD}"
 cmake -S "${SRC}" -B "${BUILD}" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -50,5 +50,15 @@ mkdir -p "${DEST}"
 cp "${BUILD}/emf2svg-conv" "${DEST}/emf2svg-conv"
 chmod +x "${DEST}/emf2svg-conv"
 
+if [ "$(uname -s)" = "Darwin" ]; then
+    if [ -f "${BUILD}/libemf2svg.1.dylib" ]; then
+        cp -a "${BUILD}/libemf2svg"* "${DEST}/" 2>/dev/null || true
+    fi
+    install_name_tool -add_rpath "@executable_path" "${DEST}/emf2svg-conv" 2>/dev/null || true
+    install_name_tool -delete_rpath "${BUILD}" "${DEST}/emf2svg-conv" 2>/dev/null || true
+    install_name_tool -delete_rpath "${SRC}/deps/lib" "${DEST}/emf2svg-conv" 2>/dev/null || true
+fi
+
 echo "==> Patched binary installed: ${DEST}/emf2svg-conv"
 "${DEST}/emf2svg-conv" --help 2>&1 | head -3 || true
+

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import copy
+import functools
 import io
 import math
 import os
@@ -743,13 +744,16 @@ def _convert_single_item(
         # libemf2svg avoids native EMF importer crashes on some macOS builds.
         project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         local_bin = shutil.which(os.path.join(project_dir, "bin", "emf2svg-conv"))
-        emf_converter = local_bin or shutil.which("emf2svg-conv")
+        system_bin = shutil.which("emf2svg-conv")
+        emf_converter = local_bin or system_bin
         if not emf_converter:
             raise RepairError(f"emf2svg-conv not found to convert {source_name}")
 
         scale_width = False
         scale_height = False
         svg_temp = os.path.join(item_dir, "intermediate.svg")
+        first_exc = None
+        result = None
         try:
             result = subprocess.run(
                 [emf_converter, "-i", source_temp, "-o", svg_temp],
@@ -758,9 +762,38 @@ def _convert_single_item(
                 check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            raise RepairError(f"EMF to SVG conversion failed for {source_name}") from exc
-        if result.returncode != 0 or not os.path.isfile(svg_temp):
-            raise RepairError(f"EMF to SVG conversion failed for {source_name}")
+            first_exc = exc
+
+        # If local_bin failed and a different system_bin exists, retry with system_bin
+        if (
+            (result is None or result.returncode != 0 or not os.path.isfile(svg_temp))
+            and local_bin
+            and system_bin
+            and local_bin != system_bin
+        ):
+            try:
+                result = subprocess.run(
+                    [system_bin, "-i", source_temp, "-o", svg_temp],
+                    capture_output=True,
+                    timeout=120,
+                    check=False,
+                )
+                first_exc = None
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise RepairError(f"EMF to SVG conversion failed for {source_name}: {exc}") from exc
+
+        if result is None and first_exc is not None:
+            raise RepairError(f"EMF to SVG conversion failed for {source_name}: {first_exc}") from first_exc
+
+        if result is None or result.returncode != 0 or not os.path.isfile(svg_temp):
+            stderr = result.stderr if result is not None else ""
+            detail = (
+                stderr.decode("utf-8", "replace")
+                if isinstance(stderr, bytes)
+                else str(stderr)
+            ).strip()
+            suffix_detail = f": {detail[:300]}" if detail else ""
+            raise RepairError(f"EMF to SVG conversion failed for {source_name}{suffix_detail}")
 
         raw_svg = Path(svg_temp).read_text(encoding="utf-8", errors="replace")
         try:
