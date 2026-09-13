@@ -180,6 +180,55 @@ x86_64-w64-mingw32-g++ -O2 -std=c++17 -municode -ffunction-sections -fdata-secti
   -c native/origin-bridge/main.cpp -o /tmp/main.o && x86_64-w64-mingw32-size /tmp/main.o
 ```
 
+## Windows Helper 匯出往返與視窗介面（2026-09-13 已完成）
+
+### 1. LabTalk 往返次數
+
+`AutoExportOriginGraph` 原本是 `doc -s;` → SVG → PNG，每個都是一次獨立的
+`ExecuteLabTalk`（一次 COM 往返）。兩處改動：
+
+- **`doc -s;` 併進第一個 export 語句**（`"doc -s; expGraph ..."`）。LabTalk 兩種寫法都會
+  執行這兩句，所以純粹少一次 COM 往返，不改變執行順序。
+- **參數從 `bool isClosing` 換成 `enum class PreviewExport`**，因為兩個消費者要的檔案不同，
+  而「兩個都產」才是貴的地方：
+  - helper 自己的畫布只讀 `preview.png` / `preview.emf`（`ManualPreviewPath`），
+    **完全不讀 `preview.svg`**
+  - Mac 端偏好 `preview.svg` 並在回寫時用 resvg 點陣化，而回寫本來就會再匯出一次 SVG
+
+  所以 `WM_ACTIVATE` 的即時預覽改成 `CanvasRefresh`（只出 PNG），不再每次切回 Origin
+  都重算一次 SVG。`Save & Close` 維持 `Final`（SVG，PNG 只在 SVG 失敗時才做），
+  `Save & Refresh`／OLE `SaveObject`／`--probe` 維持 `Full`。
+
+最少 COM 往返次數（不含只在直接匯出失敗時才跑的 `doc -e P` 備援）：
+
+| 路徑 | 之前 | 之後 |
+| --- | ---: | ---: |
+| 即時畫布更新（WM_ACTIVATE） | 2 | 1 |
+| Save & Close | 2 | 1 |
+| Save & Refresh | 3 | 2 |
+
+### 2. 視窗 DPI 與版面
+
+**根因**：exe 沒有 manifest、沒有 `.rsrc` 區段、也沒有任何 DPI 程式碼 →
+Windows 當它是 DPI-unaware，把整個視窗**位圖拉伸**。Parallels guest 對 Retina 主機
+通常跑 200% 縮放，所以按鈕文字與狀態列都是從 96 DPI 位圖放大來的，看起來就是模糊。
+
+**關鍵陷阱**：**只開 DPI 感知會更糟**。控制項是用硬編碼像素座標擺的，一旦變成 DPI-aware，
+在 2x 螢幕上會畫成一半大小。這兩件事必須一起做。
+
+- `EnableDpiAwareness()` 在 `wmain` 第一行執行（必須在任何視窗建立之前）。
+  優先用 `SetProcessDpiAwarenessContext` 的 per-monitor v2，取不到才退回 `SetProcessDPIAware()`。
+- 版面常數改成 96 DPI 設計單位，透過 `Scale()` 縮放；`dpi_` 在 `WM_CREATE` 取得。
+- `LayoutControls()` 是唯一幾何來源，由 `WM_CREATE`／`WM_SIZE`／`WM_DPICHANGED` 呼叫。
+  `WM_PAINT` 改讀 `previewRect_`，不再自己重算（原本畫布與控制項各算一份，會不一致）。
+- `WM_GETMINMAXINFO` 設最小尺寸（原本可以拖到預覽框反轉）。
+- 狀態列原本固定 980px，視窗一變窄就被裁掉；改成跟著 client 寬度。
+- 「Save and Close」改成 `BS_DEFPUSHBUTTON`（主要動作有預設按鈕外框）。
+  **副作用：Enter 也會觸發它。**
+
+編譯零警告（`-Wall -Wextra`）。二進位 300,544 bytes（原始的 27.5%）。
+**未經目視驗證** —— 這台機器碰不到 guest，版面要在 VM 上實際看過才算數。
+
 > 分支狀態：`feat/app-ui-optimization` 已以 fast-forward 合併回 `main`。此 repo 沒有遠端，全部為本機提交。待辦 #1 的開發從 `main` 另開分支進行。
 
 ## 待辦
