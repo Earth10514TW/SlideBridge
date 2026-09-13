@@ -358,7 +358,7 @@ Pillow 裝在受管理的 venv：`/Users/earth/.workbuddy-ai/binaries/python/env
 - macOS App 建置簽名驗證通過。
 - 以使用者本機實體簡報 `/Users/earth/Downloads/ALD-Overall copy.pptx` 投影片 12（`群組 25` 包含 6 個圖表）進行實機 AppleScript 交互測試，成功以 0.000018 pt 誤差秒級命中 `物件 32`。
 
-> 分支狀態：主分支 main 之外開立特性分支 `fix/group-shape-ole-selection`，已完成本機實作與驗收。
+> 分支狀態：所有特性分支（含 `fix/group-shape-ole-selection`）均已完成驗證並合併回 `main`。此 repo 沒有遠端，全部為本機提交。待辦 #1 的開發從 `main` 另開分支進行。
 
 ## 待辦
 
