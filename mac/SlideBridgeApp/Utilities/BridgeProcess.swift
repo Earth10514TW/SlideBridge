@@ -13,9 +13,9 @@ public enum BridgeError: LocalizedError {
         case .projectRootNotFound:
             return "找不到 SlideBridge 專案根目錄。請確認專案位置未更動或執行安裝腳本。"
         case .executionFailed(let msg):
-            return msg
+            return BridgeProcess.cleanErrorMessage(from: msg)
         case .decodingFailed(let msg):
-            return "輸出解析失敗：\(msg)"
+            return "輸出解析失敗：\(BridgeProcess.cleanErrorMessage(from: msg))"
         }
     }
 }
@@ -113,7 +113,56 @@ public actor BridgeProcess {
         return nil
     }
 
-    private func execute(executable: URL, arguments: [String], workingDirectory: URL, extraEnvironment: [String: String] = [:]) async throws -> String {
+    public static func cleanErrorMessage(from raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("{"),
+              let data = trimmed.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return raw
+        }
+
+        // 1. Check if it's a DoctorReport format
+        if let checks = json["checks"] as? [[String: Any]] {
+            var items: [String] = []
+            for check in checks {
+                let status = check["status"] as? String ?? ""
+                if status == "fail" || status == "warn" {
+                    let name = check["name"] as? String ?? "環境檢查"
+                    let detail = check["detail"] as? String ?? ""
+                    let fix = check["fix"] as? String ?? ""
+                    var line = "• \(name)：\(detail)"
+                    if !fix.isEmpty {
+                        line += "\n  建議解決方式：\(fix)"
+                    }
+                    items.append(line)
+                }
+            }
+            if !items.isEmpty {
+                return "環境檢測發現以下項目需要處理：\n\n" + items.joined(separator: "\n\n")
+            }
+        }
+
+        // 2. Generic message / error / detail fields
+        if let msg = json["message"] as? String, !msg.isEmpty {
+            return msg
+        }
+        if let err = json["error"] as? String, !err.isEmpty {
+            return err
+        }
+        if let detail = json["detail"] as? String, !detail.isEmpty {
+            return detail
+        }
+
+        return raw
+    }
+
+    private func execute(
+        executable: URL,
+        arguments: [String],
+        workingDirectory: URL,
+        extraEnvironment: [String: String] = [:],
+        allowNonZeroExit: Bool = false
+    ) async throws -> String {
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
@@ -146,8 +195,13 @@ public actor BridgeProcess {
                     let stderrStr = String(data: errData, encoding: .utf8) ?? ""
 
                     if process.terminationStatus != 0 {
-                        let combined = stderrStr.isEmpty ? stdoutStr : stderrStr
-                        continuation.resume(throwing: BridgeError.executionFailed(combined.trimmingCharacters(in: .whitespacesAndNewlines)))
+                        if allowNonZeroExit && !stdoutStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            continuation.resume(returning: stdoutStr)
+                        } else {
+                            let combined = stderrStr.isEmpty ? stdoutStr : stderrStr
+                            let clean = BridgeProcess.cleanErrorMessage(from: combined.trimmingCharacters(in: .whitespacesAndNewlines))
+                            continuation.resume(throwing: BridgeError.executionFailed(clean))
+                        }
                     } else {
                         continuation.resume(returning: stdoutStr)
                     }
@@ -158,7 +212,7 @@ public actor BridgeProcess {
         }
     }
 
-    public func run(subcommand: [String]) async throws -> String {
+    public func run(subcommand: [String], allowNonZeroExit: Bool = false) async throws -> String {
         guard let python = resolvePythonPath() else {
             throw BridgeError.pythonNotFound
         }
@@ -176,7 +230,8 @@ public actor BridgeProcess {
             extraEnvironment: [
                 "PYTHONUNBUFFERED": "1",
                 "SLIDEBRIDGE_PROJECT_ROOT": root.path
-            ]
+            ],
+            allowNonZeroExit: allowNonZeroExit
         )
     }
 
@@ -203,7 +258,8 @@ public actor BridgeProcess {
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
-            throw BridgeError.decodingFailed(error.localizedDescription + "\n原始輸出: " + raw)
+            let clean = BridgeProcess.cleanErrorMessage(from: raw)
+            throw BridgeError.decodingFailed(error.localizedDescription + "\n" + clean)
         }
     }
 
@@ -222,7 +278,7 @@ public actor BridgeProcess {
     }
 
     public func doctor() async throws -> DoctorReport {
-        let output = try await run(subcommand: ["doctor", "--json"])
+        let output = try await run(subcommand: ["doctor", "--json"], allowNonZeroExit: true)
         return try decodeJSON(DoctorReport.self, from: output)
     }
 

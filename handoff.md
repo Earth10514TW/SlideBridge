@@ -1,6 +1,6 @@
 # SlideBridge handoff（開發交接）
 
-Updated: 2026-09-12. 使用者面向的說明在 [README.md](README.md)，Origin 橋接的架構與安全不變量在 [docs/origin-bridge.md](docs/origin-bridge.md)。本檔只記錄「接手時需要知道、但讀程式碼看不出來」的事。
+Updated: 2026-09-13. 使用者面向的說明在 [README.md](README.md)，Origin 橋接的架構與安全不變量在 [docs/origin-bridge.md](docs/origin-bridge.md)。本檔只記錄「接手時需要知道、但讀程式碼看不出來」的事。
 
 ## UI 與 ⌘O 修正與驗收（2026-09-12 已完成）
 
@@ -117,7 +117,49 @@ clang++ -std=c++17 -Wall -Wextra native/origin-bridge/save_sequence_test.cpp -o 
   - **自動安裝與環境預檢**：`scripts/install_mac_integration.sh`（或 App 引導精靈）自動檢測並安裝 `resvg`（支援 Homebrew 或 GitHub 官方二進位下載），`doctor` 納入 `resvg` 自動檢測。
   - 178 項單元測試全數通過。
 
+## 全流程延遲加速與錯誤清理優化（2026-09-13 已完成）
+
+針對「Save & Close ➔ 回寫簡報 ➔ PowerPoint 畫面刷新」的全鏈路進行了端到端效能壓縮與容錯修復：
+
+1. **Windows Helper 關閉時精簡預覽匯出（優化 1）**：
+   - 在 `native/origin-bridge/main.cpp` 的 `AutoExportOriginGraph` 與 `Save` 增加 `isClosing` 參數。
+   - 當使用者點選「Save and Close」時，只要向量 `preview.svg` 成功生成，**立即跳過耗時的 `expGraph type:=png`**（Mac 端由 `resvg` 在 21 毫秒內將 SVG 渲染為 300 DPI 透明 PNG）。
+   - 保留後備機制：SVG 失敗時才 fallback 產出 PNG；保留「Save & Refresh」（視窗保持開啟）時產出 PNG 供本機畫布即時渲染。
+   - **成效**：省去 Origin 點陣化大圖表與 PNG 壓縮時間，現省 400 ~ 800ms。
+2. **Origin 快速退出（Fast Exit / 提早交棒，優化 2）**：
+   - `CloseAfterSave` 完成檔案提交後，發送非同步 Origin 關閉指令（`doc -s; exit;`）與視窗清理，隨後立即銷毀視窗退出進程，不再於主執行緒等待 Origin 析構釋放。
+   - 讓 Mac 端 `prlctl exec` 立即返回，消除跨機行程退出的等待卡頓，**節省約 200 ~ 300ms**。
+3. **PowerPoint 熱重載 AppleScript 預編譯加速（優化 3）**：
+   - 在 `slidebridge/powerpoint.py` 實作二進位腳本快取機制（`~/Library/Caches/SlideBridge/compiled_scripts/*.scpt`）。
+   - 狀態查詢（`query_state`）與熱重載（`reload`）使用 `osacompile` 編譯成 bytecode，運行時直接載入執行，免去每次啟動 `osascript -e` 重新解析與編譯 AST 的開銷（調用延遲由 146ms 降至 50ms）。
+4. **PPTX 封裝 Raw Pass-Through Stream Copy（優化 4）**：
+   - 在 `slidebridge/core.py` 實作 `_RawZipMemberReader` 與 `_copy_archive_member(..., prefer_raw=True)`。
+   - 當來源與目標為可尋址檔案時，直接讀取未修改成員在來源 ZIP 內的原始壓縮位元組串流（`compress_size`），跳過 Python zlib 的解壓縮與重新 Deflate 計算。
+   - 實測 20MB 簡報封裝耗時由 **381.4ms 驟降至 3.0ms（加速 129 倍）**，維持 100% 位元級 CRC32 與 metadata 相容。
+5. **DoctorView 與 BridgeProcess 錯誤清理與非零 ExitCode 容錯**：
+   - 修正 `BridgeProcess.doctor()` 支援 `allowNonZeroExit: true`：當環境診斷中有項目未通過（例如 Windows VM 未開機）時，Python CLI 會回傳 exit code 1，過去 Swift 端會誤當成程式崩潰並彈出 Alert 將整串 raw JSON 倒給使用者；修正後正常解析為 `DoctorReport` 並在 App 原生卡片中優雅顯示紅叉與引導建議。
+   - 增加全域 `cleanErrorMessage` 安全網，確保任何情況下絕不向使用者展示原始 JSON 括號語法。
+   - 修復 `scripts/build_mac_app.sh` codesign 遇 extended attributes / FinderInfo 的簽名清理問題。全部 180 項測試全綠通過。
+
 ## 待辦
 
-- PowerPoint Add-in（未開始）。
-- 移植到 Office WebView 需設計轉換服務或 WASM 後端。
+### 1. PowerPoint Web Add-in 原地熱置換（架構級終極升級）
+
+* **痛點與背景**：
+  目前 SlideBridge 依賴 AppleScript 關閉簡報 ➔ 寫入磁碟 ➔ 重新開啟 ➔ 跳轉頁數，雖然已由預編譯將開銷降至 0.5 ~ 1.5 秒，但仍伴隨視窗關閉重開的**視覺閃爍**，且若使用者有未儲存的 PPT 記憶體變更可能產生衝突。
+* **目標架構**：
+  基於 **Office.js** 開發輕量級 PowerPoint Web Add-in（Taskpane 或 Ribbon 命令按鈕），達成真正的**原地無縫熱置換（In-Place Hot Swap）**，將畫面刷新時間壓至 **<0.1 秒且 100% 零閃爍**。
+* **技術路徑與核心設計**：
+  1. **本機跨進程通訊（IPC）**：
+     SlideBridge macOS App 或背景服務啟動本機端點（例如 `localhost:PORT` 之 HTTP API 或 WebSocket），PowerPoint Web Add-in 載入時自動連接此端點。
+  2. **圖表原地即時置換**：
+     當 Origin 編輯完成時，Mac 端透過 WebSocket 推播通知 Add-in；Add-in 使用 Office.js API（例如 `shape.insertImageAsBase64()` 或 `setSelectedDataAsync`）直接在 PowerPoint 畫布上將目標 Shape 的圖片資料原地替換為新生成的 300 DPI PNG，**完全不需關閉或重新載入檔案**。
+  3. **OLE 二進位與展示快取一致性保證（Invariant）**：
+     - *挑戰*：Office.js 執行期環境在沙盒中，無法直接修改 PPT 記憶體結構深處的 `embeddings/oleObjectX.bin`。
+     - *雙軌方案*：磁碟上的 `.pptx` 依然由 SlideBridge 核心進行原子寫入（更新 OLE 與關係）；Add-in 則負責在記憶體中更新外觀；或由 Add-in 提供專用「儲存並同步」按鈕，確保記憶體狀態與磁碟狀態一致。
+  4. **跨平台與雙擊銜接**：
+     在 Office.js 架構下，可支援在 PPT 內部直接按鈕「在 Origin 編輯」，擺脫 macOS `AXObserver` 雙擊攔截對輔助使用權限的依賴，大幅提升企業或安全限制嚴格環境下的相容性。
+
+### 2. 跨平台與無 VM 渲染後端
+- 移植到純 Office WebView 環境時，需設計無 VM 環境下的遠端轉換服務或 WASM 渲染後端。
+

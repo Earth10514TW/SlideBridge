@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import copy
+import io
 import math
 import os
 import posixpath
@@ -107,12 +108,82 @@ def _check_archive(path: str) -> zipfile.ZipFile:
         raise
 
 
+class _RawZipMemberReader(io.RawIOBase):
+    def __init__(self, fp, offset: int, size: int):
+        self._fp = fp
+        self._offset = offset
+        self._size = size
+        self._pos = 0
+
+    def read(self, n: int = -1) -> bytes:
+        if n is None or n < 0:
+            n = self._size - self._pos
+        else:
+            n = min(n, self._size - self._pos)
+        if n <= 0:
+            return b""
+        self._fp.seek(self._offset + self._pos)
+        chunk = self._fp.read(n)
+        self._pos += len(chunk)
+        return chunk
+
+
 def _copy_archive_member(
-    archive: zipfile.ZipFile, destination: zipfile.ZipFile, info: zipfile.ZipInfo
+    archive: zipfile.ZipFile,
+    destination: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    prefer_raw: bool = False,
 ) -> None:
-    """Copy an unchanged member with bounded memory, retaining its metadata."""
-    # ZipFile.open mutates the output ZipInfo as it writes; keep the source
-    # record intact so subsequent reads still use its original CRC and sizes.
+    """Copy an unchanged member with bounded memory, retaining its metadata.
+
+    When prefer_raw is True and streams are seekable, copies the raw compressed bytes
+    directly to skip redundant decompress-recompress computation.
+    """
+    if prefer_raw:
+        try:
+            if (
+                archive.fp
+                and destination.fp
+                and hasattr(archive.fp, "seek")
+                and hasattr(destination.fp, "seek")
+                and hasattr(destination, "_seekable")
+                and not getattr(archive, "_writing", False)
+                and not getattr(destination, "_writing", False)
+            ):
+                archive.fp.seek(info.header_offset)
+                fheader = archive.fp.read(zipfile.sizeFileHeader)
+                if len(fheader) == zipfile.sizeFileHeader:
+                    fheader_fields = struct.unpack(zipfile.structFileHeader, fheader)
+                    if fheader_fields[zipfile._FH_SIGNATURE] == zipfile.stringFileHeader:
+                        fn_len = fheader_fields[zipfile._FH_FILENAME_LENGTH]
+                        extra_len = fheader_fields[zipfile._FH_EXTRA_FIELD_LENGTH]
+                        compressed_data_offset = (
+                            info.header_offset + zipfile.sizeFileHeader + fn_len + extra_len
+                        )
+
+                        info_copy = copy.copy(info)
+                        if destination._seekable:
+                            destination.fp.seek(destination.start_dir)
+                        info_copy.header_offset = destination.fp.tell()
+
+                        destination._writecheck(info_copy)
+                        destination._didModify = True
+                        zip64 = info_copy.file_size * 1.05 > zipfile.ZIP64_LIMIT
+                        destination.fp.write(info_copy.FileHeader(zip64))
+
+                        raw_reader = _RawZipMemberReader(
+                            archive.fp, compressed_data_offset, info.compress_size
+                        )
+                        shutil.copyfileobj(raw_reader, destination.fp, length=1024 * 1024)
+
+                        destination.filelist.append(info_copy)
+                        destination.NameToInfo[info_copy.filename] = info_copy
+                        destination.start_dir = destination.fp.tell()
+                        return
+        except Exception:
+            pass
+
+    # Standard path: decompress and recompress
     with archive.open(info) as source, destination.open(copy.copy(info), "w") as target:
         shutil.copyfileobj(source, target, length=1024 * 1024)
 
@@ -1019,7 +1090,7 @@ def repair(
                 for info in infos:
                     payload = updated_parts.get(info.filename)
                     if payload is None:
-                        _copy_archive_member(archive, destination, info)
+                        _copy_archive_member(archive, destination, info, prefer_raw=True)
                     else:
                         destination.writestr(copy.copy(info), payload)
                 for member_name, payload in generated.items():

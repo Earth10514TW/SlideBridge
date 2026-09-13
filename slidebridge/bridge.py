@@ -697,7 +697,7 @@ def writeback_ole(
             for info in infos:
                 payload = updated_parts.get(info.filename)
                 if payload is None:
-                    _copy_archive_member(archive, destination, info)
+                    _copy_archive_member(archive, destination, info, prefer_raw=True)
                 else:
                     destination.writestr(copy.copy(info), payload)
             for member_name, payload in new_members.items():

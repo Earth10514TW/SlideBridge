@@ -101,10 +101,10 @@ mkdir -p "$HOME/.slidebridge"
 printf '%s\n' "$PROJECT_ROOT" > "$HOME/.slidebridge/project-root"
 
 # 5. Ad-hoc code sign bundle
-xattr -cr "$APP_BUNDLE"
-# File Provider can restore FinderInfo while recursive cleanup runs. Remove it
-# last, immediately before signing the rebuilt bundle.
-xattr -dr com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
+dot_clean "$APP_BUNDLE" 2>/dev/null || true
+xattr -cr "$APP_BUNDLE" 2>/dev/null || true
+xattr -c "$APP_BUNDLE" 2>/dev/null || true
+xattr -d com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
 codesign --force --deep --sign - "$APP_BUNDLE"
 
 echo "✔ Build complete: $APP_BUNDLE"

@@ -556,7 +556,7 @@ class OriginHost final : public IOleClientSite,
 
   // Drives Origin's internal expGraph command via COM Automation
   // to export the active graph window into the session folder.
-  bool AutoExportOriginGraph(const std::wstring& sessionDir) {
+  bool AutoExportOriginGraph(const std::wstring& sessionDir, bool isClosing = false) {
     if (sessionDir.empty()) {
       return false;
     }
@@ -580,14 +580,19 @@ class OriginHost final : public IOleClientSite,
       ExecuteLabTalk(L"doc -e P { expGraph type:=svg filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace; };");
     }
 
-    // 2. Also export PNG for in-helper window canvas display and fallback
-    ExecuteLabTalk(L"expGraph type:=png filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace;");
-    if (!FileExists(sessionDir + L"\\preview.png")) {
-      ExecuteLabTalk(L"doc -e P { expGraph type:=png filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace; };");
-    }
-
     bool hasSvg = FileExists(sessionDir + L"\\preview.svg");
-    bool hasPng = FileExists(sessionDir + L"\\preview.png");
+
+    // Optimization: When closing, if SVG export succeeded, skip redundant PNG rasterization.
+    // Mac side renders transparent 300 DPI PNG directly from preview.svg via resvg.
+    bool hasPng = false;
+    if (!isClosing || !hasSvg) {
+      // 2. Also export PNG for in-helper window canvas display or fallback
+      ExecuteLabTalk(L"expGraph type:=png filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace;");
+      if (!FileExists(sessionDir + L"\\preview.png")) {
+        ExecuteLabTalk(L"doc -e P { expGraph type:=png filename:=\"preview\" path:=\"" + sessionDirFwd + L"\" overwrite:=replace; };");
+      }
+      hasPng = FileExists(sessionDir + L"\\preview.png");
+    }
 
     if (hasSvg || hasPng) {
       std::wstring msg = L"Origin COM Auto-Export succeeded: ";
@@ -681,7 +686,7 @@ class OriginHost final : public IOleClientSite,
   // finally-style path after IPersistStorage::Save has been entered.  The
   // guard prevents a server callback during Save from recursively entering
   // the same operation.
-  HRESULT Save() {
+  HRESULT Save(bool isClosing = false) {
     if (saving_) {
       return RPC_E_CALL_REJECTED;
     }
@@ -719,7 +724,7 @@ class OriginHost final : public IOleClientSite,
       const std::wstring sessionDir = GetDirectoryOf(outputBasePath_);
       bool autoExported = false;
       if (!sessionDir.empty()) {
-        autoExported = AutoExportOriginGraph(sessionDir);
+        autoExported = AutoExportOriginGraph(sessionDir, isClosing);
       }
 
       // Only run expensive OleDraw + GDI+ 300 DPI rasterization if COM auto-export failed
@@ -1415,7 +1420,7 @@ class EditApp final {
               SaveObject();
               return 0;
             case kSaveCloseButton:
-              if (SaveObject()) {
+              if (SaveObject(true)) {
                 CloseWindowAfterSave();
               }
               return 0;
@@ -1504,12 +1509,12 @@ class EditApp final {
     }
   }
 
-  bool SaveObject() {
+  bool SaveObject(bool isClosing = false) {
     if (!host_ || !host_->HasObject()) {
       SetStatus(L"No Origin object is loaded.");
       return true;
     }
-    HRESULT hr = host_->Save();
+    HRESULT hr = host_->Save(isClosing);
     if (FAILED(hr)) {
       if (host_->PersistencePoisoned()) {
         SetStatus(L"Persistence is unusable; confirm Discard and Close to abandon this output copy.");

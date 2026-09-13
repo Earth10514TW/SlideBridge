@@ -13,6 +13,7 @@ PowerPoint on macOS:
 from __future__ import annotations
 
 import datetime
+import hashlib
 import os
 import posixpath
 import re
@@ -20,6 +21,7 @@ import subprocess
 import uuid
 import zipfile
 from pathlib import Path
+from typing import Sequence
 from xml.etree import ElementTree
 
 from .core import SlideBridgeError, UnchangedObjectError, _path_string
@@ -32,6 +34,58 @@ _REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 _P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 _A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 _R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+
+_COMPILED_CACHE_DIR = Path.home() / "Library/Caches/SlideBridge/compiled_scripts"
+
+_STATE_SCRIPT_SOURCE = """on run argv
+    set saveFirst to (item 1 of argv is "true")
+    tell application "Microsoft PowerPoint"
+        if not running then
+            return "ERROR:NOT_RUNNING"
+        end if
+        if (count of presentations) is 0 then
+            return "ERROR:NO_PRESENTATION"
+        end if
+        if saveFirst then
+            save active presentation
+        end if
+        set pres to active presentation
+        set presPath to full name of pres as text
+        set w to active window
+        set curSlide to slide index of (slide of view of w)
+        set sel to selection of w
+        set selType to selection type of sel as text
+        
+        if selType is "selection type shapes" then
+            set sr to shape range of sel
+            set s to shape 1 of sr
+            set vName to name of s as text
+            set vTop to (top of s) as text
+            set vLeft to (left position of s) as text
+            set vW to (width of s) as text
+            set vH to (height of s) as text
+            return "OK|" & presPath & "|" & curSlide & "|SHAPE|" & vName & "|" & vLeft & "|" & vTop & "|" & vW & "|" & vH
+        else
+            return "OK|" & presPath & "|" & curSlide & "|NONE"
+        end if
+    end tell
+end run"""
+
+_RELOAD_SCRIPT_SOURCE = """on run argv
+    set absPath to item 1 of argv
+    set slideIdx to (item 2 of argv) as integer
+    tell application "Microsoft PowerPoint"
+        try
+            set p to active presentation
+            close p
+        end try
+        set newP to open (POSIX file absPath)
+        try
+            set v to view of active window
+            go to slide v number slideIdx
+        end try
+    end tell
+end run"""
 
 
 def default_session_parent() -> Path:
@@ -62,6 +116,54 @@ def _run_applescript(script: str) -> str:
     except subprocess.CalledProcessError as exc:
         err = exc.stderr.strip() or str(exc)
         raise SlideBridgeError(f"AppleScript error: {err}") from exc
+
+
+def _get_compiled_script(name: str, source: str) -> Path | None:
+    """Compile AppleScript source to a cached .scpt file to eliminate runtime parsing overhead."""
+    try:
+        source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
+        _COMPILED_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        target = _COMPILED_CACHE_DIR / f"{name}_{source_hash}.scpt"
+        if target.is_file():
+            return target
+        tmp_target = target.with_suffix(f".tmp_{os.getpid()}")
+        proc = subprocess.run(
+            ["osacompile", "-e", source, "-o", str(tmp_target)],
+            capture_output=True,
+            timeout=10,
+        )
+        if proc.returncode == 0 and tmp_target.is_file():
+            os.replace(tmp_target, target)
+            return target
+        return None
+    except Exception:
+        return None
+
+
+def _run_compiled_or_raw(
+    name: str,
+    compiled_source: str,
+    raw_script: str,
+    args: Sequence[str] = (),
+) -> str:
+    """Execute precompiled .scpt bytecode if available, falling back to raw AppleScript."""
+    compiled_path = _get_compiled_script(name, compiled_source)
+    if compiled_path is not None:
+        try:
+            proc = subprocess.run(
+                ["osascript", str(compiled_path), *args],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            return proc.stdout.strip()
+        except subprocess.CalledProcessError as exc:
+            err = exc.stderr.strip() or str(exc)
+            raise SlideBridgeError(f"AppleScript error: {err}") from exc
+        except Exception:
+            pass
+    return _run_applescript(raw_script)
 
 
 def get_active_powerpoint_state(save_first: bool = False) -> dict:
@@ -108,7 +210,12 @@ def get_active_powerpoint_state(save_first: bool = False) -> dict:
         end if
     end tell
     """
-    out = _run_applescript(script)
+    out = _run_compiled_or_raw(
+        "query_state",
+        _STATE_SCRIPT_SOURCE,
+        script,
+        args=["true" if save_first else "false"],
+    )
     if out == "ERROR:NOT_RUNNING":
         raise SlideBridgeError("Microsoft PowerPoint is not running.")
     if out == "ERROR:NO_PRESENTATION":
@@ -172,7 +279,12 @@ def reload_presentation(pptx_path: str, slide_index: int = 1) -> None:
         end try
     end tell
     """
-    _run_applescript(script)
+    _run_compiled_or_raw(
+        "reload",
+        _RELOAD_SCRIPT_SOURCE,
+        script,
+        args=[abs_path, str(slide_index)],
+    )
 
 
 def _get_ordered_slide_parts(archive: zipfile.ZipFile) -> list[str]:
