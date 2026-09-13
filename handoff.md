@@ -203,9 +203,13 @@ x86_64-w64-mingw32-g++ -O2 -std=c++17 -municode -ffunction-sections -fdata-secti
 
 | 路徑 | 之前 | 之後 |
 | --- | ---: | ---: |
-| 即時畫布更新（WM_ACTIVATE） | 2 | 1 |
-| Save & Close | 2 | 1 |
+| 即時畫布更新（WM_ACTIVATE） | 3 | 1 |
 | Save & Refresh | 3 | 2 |
+| Save & Close（SVG 成功時） | 2 | 1 |
+
+> 更正：`bc08c37` 的 commit message 把 WM_ACTIVATE 寫成 2 → 1。實際原本是三個獨立的
+> `ExecuteLabTalk`（`doc -s;`、SVG、PNG），所以是 **3 → 1**。程式碼沒問題，是訊息裡的
+> 數字寫少了。
 
 ### 2. 視窗 DPI 與版面
 
