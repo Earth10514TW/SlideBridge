@@ -110,8 +110,24 @@ public enum L10nKey {
     case presFileLabel
     case slideAndShapeLabel
     case oleBinaryLabel
-    case backupPresLabel
     case hotReloadNotice
+
+    // Backups & Restore
+    case backupSectionTitle
+    case backupSectionDesc(days: Int, keep: Int)
+    case backupRefresh
+    case backupEmptyHint
+    case backupSummary(count: Int, size: String)
+    case backupRestoreAction
+    case backupClearAction
+    case backupClearAllMenu
+    case backupClearConfirmTitle
+    case backupClearConfirmMessage(count: Int)
+    case backupRestoreConfirmTitle
+    case backupRestoreConfirmMessage(date: String, presentation: String)
+    case backupRestoredMessage
+    case backupRestoreUnchangedMessage
+    case backupClearedMessage(count: Int, size: String)
     case guideTitle
     case step1Title
     case step1Desc
@@ -376,8 +392,52 @@ public class LanguageManager: ObservableObject {
             return isEn ? "Slide & Shape:" : "投影片與物件："
         case .oleBinaryLabel:
             return isEn ? "OLE Binary:" : "OLE 二進位："
-        case .backupPresLabel:
-            return isEn ? "Backup Presentation:" : "備份簡報："
+        case .backupSectionTitle:
+            return isEn ? "Backups & Restore" : "備份與回復"
+        case let .backupSectionDesc(days, keep):
+            return isEn
+                ? "A snapshot is kept before every in-place update, then cleared automatically after \(days) days or \(keep) snapshots."
+                : "每次原地更新前會自動保留一份，\(days) 天後或超過 \(keep) 份時自動清除。"
+        case .backupRefresh:
+            return isEn ? "Refresh" : "重新整理"
+        case .backupEmptyHint:
+            return isEn
+                ? "No backups are being retained right now."
+                : "目前沒有保留任何備份。"
+        case let .backupSummary(count, size):
+            return isEn
+                ? "\(count) backup(s) · \(size) stored"
+                : "\(count) 份備份 · 佔用 \(size)"
+        case .backupRestoreAction:
+            return isEn ? "Restore this version" : "回復此版本"
+        case .backupClearAction:
+            return isEn ? "Delete All Backups…" : "刪除全部備份…"
+        case .backupClearAllMenu:
+            return isEn ? "Delete All Backups…" : "刪除所有備份…"
+        case .backupClearConfirmTitle:
+            return isEn ? "Delete all backups?" : "刪除全部備份？"
+        case let .backupClearConfirmMessage(count):
+            return isEn
+                ? "This deletes \(count) backup(s) and frees the space. Once deleted, these versions can no longer be restored from the app."
+                : "將刪除 \(count) 份備份並釋放空間。刪除後就無法再從 App 回復這些版本。"
+        case .backupRestoreConfirmTitle:
+            return isEn ? "Restore this version?" : "回復到此版本？"
+        case let .backupRestoreConfirmMessage(date, presentation):
+            return isEn
+                ? "“\(presentation)” will be rolled back to the snapshot from \(date). The current contents are snapshotted first, so this stays undoable."
+                : "會將「\(presentation)」回復到 \(date) 的版本。目前的內容會先自動保留一份，所以這個動作還能再還原。"
+        case .backupRestoredMessage:
+            return isEn
+                ? "Restored. Reopen the presentation in PowerPoint to see the rolled-back content."
+                : "已回復。請在 PowerPoint 重新開啟該簡報，即可看到回復後的內容。"
+        case .backupRestoreUnchangedMessage:
+            return isEn
+                ? "The presentation already matches this backup, so nothing changed."
+                : "簡報內容已經和這份備份相同，因此未做任何變更。"
+        case let .backupClearedMessage(count, size):
+            return isEn
+                ? "Deleted \(count) backup(s), freeing \(size)."
+                : "已刪除 \(count) 份備份，釋放 \(size)。"
         case .hotReloadNotice:
             return isEn
                 ? "✨ Mac PowerPoint has automatically hot-reloaded and navigated back to the original slide. You can view the updated chart immediately."

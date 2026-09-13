@@ -9,6 +9,7 @@ import zipfile
 from unittest.mock import patch
 from xml.etree import ElementTree
 
+from slidebridge import backup
 from slidebridge.bridge import prepare_ole, writeback_ole
 from slidebridge.core import SlideBridgeError
 from slidebridge.powerpoint import (
@@ -147,8 +148,16 @@ class PowerPointIntegrationTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.tmp_path = Path(self.tmp.name)
         self.pptx = _make_test_presentation(self.tmp_path / "test.pptx")
+        # Point the backup store at the sandbox: in-place writeback snapshots
+        # the presentation, and a test must never touch the real
+        # ~/Library/Application Support/SlideBridge store.
+        self._backup_env = patch.dict(
+            os.environ, {"SLIDEBRIDGE_BACKUP_DIR": str(self.tmp_path / "backup-store")}
+        )
+        self._backup_env.start()
 
     def tearDown(self):
+        self._backup_env.stop()
         self.tmp.cleanup()
 
     def test_ordered_slides(self):
@@ -232,6 +241,19 @@ class PowerPointIntegrationTests(unittest.TestCase):
         backup_path = Path(rep["backup"])
         self.assertTrue(backup_path.is_file())
         self.assertEqual(hashlib.sha256(backup_path.read_bytes()).hexdigest(), orig_sha)
+
+        # The snapshot must be restorable but invisible: the only presentation
+        # in the user's own folder is the one they put there.
+        self.assertNotEqual(backup_path.parent, self.pptx.parent)
+        self.assertEqual(
+            sorted(p.name for p in self.pptx.parent.iterdir() if p.suffix == ".pptx"),
+            ["test.pptx"],
+        )
+        self.assertEqual(rep["backup_retention_days"], backup.default_retention_days())
+        self.assertEqual(
+            [entry["id"] for entry in backup.list_backups(self.pptx)["backups"]],
+            [backup_path.name],
+        )
 
         # Confirm source presentation was modified in-place
         self.assertEqual(Path(rep["output"]).resolve(), self.pptx.resolve())

@@ -68,9 +68,84 @@ public struct EditActiveReport: Codable {
     public let shape_name: String
     public let member: String
     public let backup: String?
+    public let backup_retention_days: Int?
     public let preview_format: String?
     public let message: String?
     public let is_near_identical: Bool?
+}
+
+// MARK: - Backups
+
+/// One retained snapshot of a presentation.
+///
+/// Backups are an undo buffer, not a document the user manages: they live in
+/// the app's private store, expire on their own, and are restored from here.
+public struct BackupEntry: Codable, Identifiable, Hashable {
+    public let id: String
+    public let path: String
+    public let source: String
+    public let created: String
+    public let ts: Double
+    public let bytes: Int
+    public let reason: String
+
+    public var presentationName: String {
+        URL(fileURLWithPath: source).lastPathComponent
+    }
+
+    public var formattedSize: String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+
+    public var displayDate: String {
+        BackupEntry.parse(created)
+    }
+
+    private static let parser = ISO8601DateFormatter()
+
+    private static let display: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    private static func parse(_ value: String) -> String {
+        guard let date = parser.date(from: value) else { return value }
+        return display.string(from: date)
+    }
+}
+
+public struct BackupListReport: Codable {
+    public let store: String
+    public let presentation: String?
+    public let retention_days: Int
+    public let max_per_presentation: Int
+    public let count: Int
+    public let total_bytes: Int
+    public let backups: [BackupEntry]
+
+    public var formattedTotalSize: String {
+        ByteCountFormatter.string(fromByteCount: Int64(total_bytes), countStyle: .file)
+    }
+}
+
+public struct BackupRestoreReport: Codable {
+    public let status: String
+    public let presentation: String
+    public let restored: BackupEntry
+    public let previous_backup: BackupEntry?
+    public let message: String?
+}
+
+public struct BackupClearReport: Codable {
+    public let presentation: String?
+    public let removed_count: Int
+    public let removed_bytes: Int
+
+    public var formattedRemovedSize: String {
+        ByteCountFormatter.string(fromByteCount: Int64(removed_bytes), countStyle: .file)
+    }
 }
 
 public enum AppTab: String, CaseIterable, Identifiable {

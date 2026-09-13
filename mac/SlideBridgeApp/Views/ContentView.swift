@@ -93,6 +93,10 @@ struct ContentView: View {
             }
             .frame(minWidth: 540, minHeight: 480)
             .background(Color(nsColor: .windowBackgroundColor))
+            // Loaded for the whole window, not just the Origin Edit tab: the
+            // File menu command to discard backups must be enabled from any
+            // page, and backups outlive the edit that created them.
+            .onAppear { originEditVM.refreshBackups() }
             .sheet(isPresented: $appState.showOnboardingSheet) {
                 OnboardingView(appState: appState, doctorVM: doctorVM)
                     .environmentObject(lm)

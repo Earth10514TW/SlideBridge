@@ -287,6 +287,39 @@ public actor BridgeProcess {
         return try decodeJSON(EditActiveReport.self, from: output)
     }
 
+    /// List retained backups, either for one presentation or across all of them.
+    public func backupsList(presentation: URL? = nil) async throws -> BackupListReport {
+        var args = ["backups", "list"]
+        if let target = presentation {
+            args.append(target.path)
+        }
+        args.append("--json")
+        let output = try await run(subcommand: args)
+        return try decodeJSON(BackupListReport.self, from: output)
+    }
+
+    /// Put a backup back over the presentation. Passing no id restores the newest one.
+    public func backupsRestore(presentation: URL, backupID: String? = nil) async throws -> BackupRestoreReport {
+        var args = ["backups", "restore", presentation.path]
+        if let id = backupID {
+            args.append(contentsOf: ["--id", id])
+        }
+        args.append("--json")
+        let output = try await run(subcommand: args)
+        return try decodeJSON(BackupRestoreReport.self, from: output)
+    }
+
+    /// Discard backups once the user is satisfied, freeing the space they hold.
+    public func backupsClear(presentation: URL? = nil) async throws -> BackupClearReport {
+        var args = ["backups", "clear"]
+        if let target = presentation {
+            args.append(target.path)
+        }
+        args.append("--json")
+        let output = try await run(subcommand: args)
+        return try decodeJSON(BackupClearReport.self, from: output)
+    }
+
     public func installIntegration() async throws -> String {
         guard let root = resolveProjectRoot() else {
             throw BridgeError.projectRootNotFound

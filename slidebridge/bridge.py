@@ -19,6 +19,7 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree
 
+from .backup import create_backup
 from .core import (
     SlideBridgeError,
     UnchangedObjectError,
@@ -503,6 +504,8 @@ def writeback_ole(
     3. Valid CFB header for the new OLE binary.
     4. Strict paired writeback: a valid PNG or EMF preview image must be provided.
     5. Atomic publication: writes to a temporary file in the destination folder, never overwriting existing files (unless in_place=True).
+    6. In-place writes snapshot the original into the hidden backup store first (see
+       :mod:`slidebridge.backup`); nothing is left beside the user's presentation.
     """
     source_value = _path_string(source_path)
     session_value = _path_string(session_dir)
@@ -707,11 +710,17 @@ def writeback_ole(
         archive = None
 
         backup_path: str | None = None
+        backup_retention_days: int | None = None
         if in_place:
-            p_src = Path(source_full)
-            backup_p = p_src.with_name(f"{p_src.stem}.sb_backup{p_src.suffix}")
-            shutil.copy2(source_full, backup_p)
-            backup_path = str(backup_p)
+            # Snapshot into the hidden store instead of writing a
+            # `.sb_backup.pptx` beside the user's file.  The snapshot is an undo
+            # buffer the app restores from, not something the user should have
+            # to notice, keep track of, or tidy up afterwards.  It is taken
+            # before the swap, so a failed backup aborts with the presentation
+            # still untouched.
+            created = create_backup(source_full)
+            backup_path = created["backup"]["path"]
+            backup_retention_days = created["retention_days"]
             os.replace(temporary_output, output_full)
             temporary_output = None
         else:
@@ -744,6 +753,7 @@ def writeback_ole(
         if in_place:
             report["in_place"] = True
             report["backup"] = backup_path
+            report["backup_retention_days"] = backup_retention_days
         return report
     except SlideBridgeError:
         raise
