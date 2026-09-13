@@ -40,6 +40,16 @@ constexpr int kSaveCloseButton = 1003;
 constexpr int kStatusControl = 1004;
 constexpr int kDiscardCloseButton = 1005;
 
+// Must match the ICON resource id in resources.rc.
+constexpr int kAppIconId = 101;
+
+// Window palette. Kept close to white so the preview canvas reads as the
+// focal point, with the surrounding chrome just slightly recessed.
+constexpr COLORREF kWindowBackground = RGB(250, 250, 250);
+constexpr COLORREF kCanvasBackground = RGB(255, 255, 255);
+constexpr COLORREF kCanvasBorder = RGB(214, 214, 214);
+constexpr COLORREF kStatusText = RGB(96, 96, 96);
+
 constexpr CLSID kPngEncoderClsid = {
     0x557cf406, 0x1a04, 0x11d3, {0x9a, 0x73, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e}};
 
@@ -1359,6 +1369,13 @@ UINT WindowDpi(HWND window) {
   return dpi > 0 ? static_cast<UINT>(dpi) : 96;
 }
 
+// Pulls the entry matching the requested pixel size out of the multi-size
+// .ico embedded by resources.rc.
+HICON LoadAppIcon(HINSTANCE instance, int size) {
+  return static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(kAppIconId),
+                                       IMAGE_ICON, size, size, LR_DEFAULTCOLOR));
+}
+
 class EditApp final {
  public:
   EditApp(std::wstring output, IStorage* storage)
@@ -1385,16 +1402,37 @@ class EditApp final {
     if (discarded_) {
       DeleteFileW(output_.c_str());
     }
+    // Safe here: the message loop has returned, so the window is gone and the
+    // class brush is no longer in use.
+    for (HBRUSH* brush : {&backgroundBrush_, &canvasBrush_, &canvasBorderBrush_}) {
+      if (*brush) {
+        DeleteObject(*brush);
+        *brush = nullptr;
+      }
+    }
   }
 
   HRESULT CreateAndShow() {
-    WNDCLASSW wc{};
+    // Created once and owned by the app: the class brush erases the window on
+    // every resize, and WM_PAINT used to allocate two brushes per repaint.
+    backgroundBrush_ = CreateSolidBrush(kWindowBackground);
+    canvasBrush_ = CreateSolidBrush(kCanvasBackground);
+    canvasBorderBrush_ = CreateSolidBrush(kCanvasBorder);
+
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = &EditApp::WindowProc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.lpszClassName = kWindowClass;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-    RegisterClassW(&wc);
+    wc.hbrBackground = backgroundBrush_
+                           ? backgroundBrush_
+                           : reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    // Sized separately so Windows picks the right entry out of the .ico.
+    // hIconSm only exists on WNDCLASSEX, hence the Ex variant.
+    wc.hIcon = LoadAppIcon(wc.hInstance, GetSystemMetrics(SM_CXICON));
+    wc.hIconSm = LoadAppIcon(wc.hInstance, GetSystemMetrics(SM_CXSMICON));
+    RegisterClassExW(&wc);
 
     RECT desired{0, 0, 1024, 768};
     AdjustWindowRect(&desired, WS_OVERLAPPEDWINDOW, FALSE);
@@ -1449,6 +1487,15 @@ class EditApp final {
         host_ = new OriginHost(window_, status_, storage_, GetBasePathWithoutExt(output_));
         return 0;
 
+      case WM_CTLCOLORSTATIC: {
+        // Without this the status line paints on the system 3D-face colour,
+        // which showed up as a stray grey band across the window.
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, kStatusText);
+        return reinterpret_cast<LRESULT>(backgroundBrush_);
+      }
+
       case WM_PAINT: {
         PAINTSTRUCT ps{};
         HDC hdc = BeginPaint(window_, &ps);
@@ -1456,13 +1503,12 @@ class EditApp final {
         // can never disagree about where the preview box is.
         RECT previewBox = previewRect_;
         if (previewBox.right > previewBox.left && previewBox.bottom > previewBox.top) {
-          HBRUSH bgBrush = CreateSolidBrush(RGB(245, 245, 245));
-          FillRect(hdc, &previewBox, bgBrush);
-          DeleteObject(bgBrush);
-
-          HBRUSH borderBrush = CreateSolidBrush(RGB(200, 200, 200));
-          FrameRect(hdc, &previewBox, borderBrush);
-          DeleteObject(borderBrush);
+          if (canvasBrush_) {
+            FillRect(hdc, &previewBox, canvasBrush_);
+          }
+          if (canvasBorderBrush_) {
+            FrameRect(hdc, &previewBox, canvasBorderBrush_);
+          }
 
           if (host_ && host_->HasObject()) {
             RECT innerBox{ previewBox.left + 8, previewBox.top + 8,
@@ -1794,6 +1840,9 @@ class EditApp final {
   ULONGLONG lastAutoExportTick_ = 0;
   UINT dpi_ = 96;
   RECT previewRect_{};
+  HBRUSH backgroundBrush_ = nullptr;
+  HBRUSH canvasBrush_ = nullptr;
+  HBRUSH canvasBorderBrush_ = nullptr;
 };
 
 HRESULT RunProbe(const std::wstring& input, const std::wstring& output,
