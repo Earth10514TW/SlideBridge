@@ -230,16 +230,6 @@ class HelperCheckTests(unittest.TestCase):
         self.assertEqual(check.status, OK)
         self.assertIn("MB", check.detail)
 
-    def test_present_helper_reports_size_in_artifacts_fallback(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            (root / "artifacts" / "bin").mkdir(parents=True)
-            (root / "artifacts" / "bin" / "origin-bridge.exe").write_bytes(b"MZ" * 1024)
-            with patch.object(doctor, "project_root", return_value=root):
-                check = doctor.check_helper()
-        self.assertEqual(check.status, OK)
-        self.assertIn("MB", check.detail)
-
 
 class ResvgCheckTests(unittest.TestCase):
     def test_resvg_found_reports_ok(self):
@@ -295,10 +285,46 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(json.loads(captured["out"])["warnings"], 1)
         self.assertEqual(report["warnings"], 1)
 
-    def test_automation_permission_is_informational_only(self):
+    def test_automation_permission_reports_valid_status(self):
         check = doctor.check_automation_permission()
-        self.assertEqual(check.status, INFO)
-        self.assertNotIn(check.status, {FAIL, WARN})
+        self.assertIn(check.status, {OK, INFO, FAIL})
+        self.assertEqual(check.name, "Automation permission")
+
+    def test_automation_permission_granted_via_probe(self):
+        with patch("subprocess.run") as mock_run:
+            def side_effect(cmd, **kwargs):
+                from unittest.mock import MagicMock
+                res = MagicMock()
+                if cmd[0] == "pgrep":
+                    res.returncode = 0
+                elif "osascript" in cmd:
+                    res.returncode = 0
+                    res.stdout = "Microsoft PowerPoint\n"
+                    res.stderr = ""
+                return res
+            mock_run.side_effect = side_effect
+            with patch("ctypes.cdll.LoadLibrary", side_effect=Exception("mock ctypes bypass")):
+                check = doctor.check_automation_permission()
+        self.assertEqual(check.status, OK)
+        self.assertIn("granted", check.detail)
+
+    def test_automation_permission_denied_via_probe(self):
+        with patch("subprocess.run") as mock_run:
+            def side_effect(cmd, **kwargs):
+                from unittest.mock import MagicMock
+                res = MagicMock()
+                if cmd[0] == "pgrep":
+                    res.returncode = 0
+                elif "osascript" in cmd:
+                    res.returncode = 1
+                    res.stdout = ""
+                    res.stderr = "execution error: Not authorized to send Apple events (-1743)\n"
+                return res
+            mock_run.side_effect = side_effect
+            with patch("ctypes.cdll.LoadLibrary", side_effect=Exception("mock ctypes bypass")):
+                check = doctor.check_automation_permission()
+        self.assertEqual(check.status, FAIL)
+        self.assertIn("-1743", check.detail)
 
 
 if __name__ == "__main__":

@@ -287,26 +287,95 @@ def check_helper() -> Check:
     root = project_root()
     helper = root / "dist" / "origin-bridge.exe"
     if not helper.is_file():
-        legacy_helper = root / "artifacts" / "bin" / "origin-bridge.exe"
-        if legacy_helper.is_file():
-            helper = legacy_helper
-        else:
-            return Check(
-                "Windows helper binary",
-                FAIL,
-                f"{helper} not found",
-                "bash scripts/build_origin_bridge.sh",
-            )
+        return Check(
+            "Windows helper binary",
+            FAIL,
+            f"{helper} not found",
+            "bash scripts/build_origin_bridge.sh",
+        )
     size_mb = helper.stat().st_size / (1024 * 1024)
     return Check("Windows helper binary", OK, f"{helper.name} ({size_mb:.1f} MB)")
 
 
 def check_automation_permission() -> Check:
-    """macOS Automation consent cannot be read without Full Disk Access."""
+    """Check whether macOS Automation consent to control Microsoft PowerPoint is granted."""
+    import ctypes
+
+    # 1. Official macOS CoreServices API (queries TCC status without requiring Full Disk Access)
+    try:
+        app_services = ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+        )
+
+        class AEDesc(ctypes.Structure):
+            _fields_ = [("descriptorType", ctypes.c_uint32), ("dataHandle", ctypes.c_void_p)]
+
+        AECreateDesc = app_services.AECreateDesc
+        AECreateDesc.argtypes = [ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint32, ctypes.POINTER(AEDesc)]
+        AECreateDesc.restype = ctypes.c_int32
+
+        AEDeterminePermissionToAutomateTarget = app_services.AEDeterminePermissionToAutomateTarget
+        AEDeterminePermissionToAutomateTarget.argtypes = [
+            ctypes.POINTER(AEDesc),
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_bool,
+        ]
+        AEDeterminePermissionToAutomateTarget.restype = ctypes.c_int32
+
+        typeApplicationBundleID = 0x62756E64  # 'bund'
+        bundle_id = b"com.microsoft.Powerpoint"
+        target = AEDesc()
+        if AECreateDesc(typeApplicationBundleID, bundle_id, len(bundle_id), ctypes.byref(target)) == 0:
+            status = AEDeterminePermissionToAutomateTarget(ctypes.byref(target), 0x2A2A2A2A, 0x2A2A2A2A, False)
+            if status == 0:  # noErr
+                return Check(
+                    "Automation permission",
+                    OK,
+                    "granted for Microsoft PowerPoint",
+                )
+            elif status == -1743:  # errAEEventNotPermitted
+                return Check(
+                    "Automation permission",
+                    FAIL,
+                    "denied by system settings (-1743)",
+                    "Enable Automation permission for SlideBridge to control Microsoft PowerPoint in "
+                    "System Settings > Privacy & Security > Automation.",
+                )
+    except Exception:
+        pass
+
+    # 2. If PowerPoint is currently running, verify with a safe osascript probe
+    try:
+        running_proc = subprocess.run(["pgrep", "-xi", "Microsoft PowerPoint"], capture_output=True)
+        if running_proc.returncode == 0:
+            probe = subprocess.run(
+                ["osascript", "-e", 'tell application "Microsoft PowerPoint" to get name'],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            if probe.returncode == 0 and "PowerPoint" in probe.stdout:
+                return Check(
+                    "Automation permission",
+                    OK,
+                    "granted for Microsoft PowerPoint",
+                )
+            elif probe.returncode != 0 and "-1743" in probe.stderr:
+                return Check(
+                    "Automation permission",
+                    FAIL,
+                    "denied by system settings (-1743)",
+                    "Enable Automation permission for SlideBridge to control Microsoft PowerPoint in "
+                    "System Settings > Privacy & Security > Automation.",
+                )
+    except Exception:
+        pass
+
     return Check(
         "Automation permission",
         INFO,
-        "cannot be checked from here; macOS grants it on first use",
+        "not requested yet; macOS will prompt on first use",
         "The first PowerPoint-triggered run prompts 'PowerPoint wants to control...' -- allow it in "
         "System Settings > Privacy & Security > Automation.",
     )

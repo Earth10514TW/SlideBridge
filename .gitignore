@@ -13,3 +13,10 @@ bin/
 artifacts/
 .workbuddy-ai/
 .tmp/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

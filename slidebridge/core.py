@@ -741,11 +741,8 @@ def _convert_single_item(
             handle.write(raw_bytes)
 
         # libemf2svg avoids native EMF importer crashes on some macOS builds.
-        # Keep this intermediate private; only the rendered PNG enters PPTX.
-        local_bin = (
-            shutil.which(os.path.join(project_dir, "bin", "emf2svg-conv"))
-            or shutil.which(os.path.join(project_dir, "artifacts", "bin", "emf2svg-conv"))
-        )
+        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        local_bin = shutil.which(os.path.join(project_dir, "bin", "emf2svg-conv"))
         emf_converter = local_bin or shutil.which("emf2svg-conv")
         if not emf_converter:
             raise RepairError(f"emf2svg-conv not found to convert {source_name}")
@@ -793,10 +790,7 @@ def _convert_single_item(
         if renderer:
             active_renderer = renderer
         else:
-            local_resvg = (
-                shutil.which(os.path.join(project_dir, "bin", "resvg"))
-                or shutil.which(os.path.join(project_dir, "artifacts", "bin", "resvg"))
-            )
+            local_resvg = shutil.which(os.path.join(project_dir, "bin", "resvg"))
             resvg_bin = local_resvg or shutil.which("resvg")
             if not resvg_bin:
                 for candidate in _RESVG_CANDIDATES:

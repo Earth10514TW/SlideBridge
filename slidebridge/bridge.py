@@ -50,7 +50,6 @@ _EMBEDDINGS_PREFIX = "ppt/embeddings/"
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _RESVG_CANDIDATES = (
     str(_PROJECT_ROOT / "bin" / "resvg"),
-    str(_PROJECT_ROOT / "artifacts" / "bin" / "resvg"),
     "/opt/homebrew/bin/resvg",
     "/usr/local/bin/resvg",
     "/opt/local/bin/resvg",

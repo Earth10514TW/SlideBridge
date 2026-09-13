@@ -20,7 +20,7 @@ The native tests are explicitly opt-in. Ordinary package tests remain green; nat
 
 ## Root cause and next implementation
 
-Upstream checkout is locally cached at ignored `artifacts/upstream`, commit `658a718de180666d342a78fd4046ec1f41e65e17`.
+Upstream checkout is locally cached at ignored `.build/upstream-libemf2svg`, commit `658a718de180666d342a78fd4046ec1f41e65e17`.
 
 - `src/lib/emf2svg_rec_object_creation.c` lines 146–163 stores ordinary CREATEPEN style/width; lines 210–226 handles EXTCREATEPEN.
 - `src/lib/emf2svg_utils.c` lines 880–908 treats zero type bits as cosmetic and forces width 1, losing the ordinary CREATEPEN logical width.

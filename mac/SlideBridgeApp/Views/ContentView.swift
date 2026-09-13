@@ -45,23 +45,20 @@ struct ContentView: View {
 
                 Divider()
 
-                // Navigation List
-                // Rows are tagged with AppTab so the selection type matches
-                // `appState.selectedTab` exactly. A NavigationLink here would
-                // draw a second, offset selection highlight on top of the
-                // list's own one.
-                List(selection: $appState.selectedTab) {
+                // Navigation Items
+                VStack(spacing: 4) {
                     ForEach(AppTab.allCases) { tab in
-                        Label(tab.title(using: lm), systemImage: tab.iconName)
-                            .font(.system(size: 13, weight: .medium))
-                            .tag(tab)
+                        SidebarItemButton(
+                            tab: tab,
+                            isSelected: appState.selectedTab == tab,
+                            title: tab.title(using: lm)
+                        ) {
+                            appState.selectedTab = tab
+                        }
                     }
                 }
-                .listStyle(.sidebar)
-                // Without this the sidebar list's top inset collapses to zero
-                // inside the VStack and the selection pill sits flush against
-                // the divider. 10pt matches the footer's vertical padding.
-                .padding(.top, 10)
+                .padding(.horizontal, 12)
+                .padding(.top, 12)
 
                 Spacer()
 
@@ -120,10 +117,8 @@ struct ContentView: View {
                             }
                         }
                     } label: {
-                        Label(lm.effectiveLanguage == .en ? "English" : "繁體中文", systemImage: "globe")
-                            .font(.subheadline)
+                        Image(systemName: "globe")
                     }
-                    .labelStyle(.titleAndIcon)
                     .help(lm.t(.language))
                 }
             }
@@ -157,6 +152,60 @@ struct WorkspaceHeader: View {
             Spacer(minLength: 0)
         }
         .padding(.bottom, 8)
+    }
+}
+
+/// A clean, symmetrically-padded sidebar item matching native macOS sidebar metrics.
+private struct SidebarItemButton: View {
+    let tab: AppTab
+    let isSelected: Bool
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: tab.iconName)
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 18, alignment: .center)
+                Text(title)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+        }
+        .buttonStyle(SidebarButtonStyle(isSelected: isSelected))
+    }
+}
+
+private struct SidebarButtonStyle: ButtonStyle {
+    let isSelected: Bool
+    @Environment(\.controlActiveState) private var controlActiveState
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(foregroundColor)
+            .background(backgroundView(isPressed: configuration.isPressed))
+            .contentShape(Rectangle())
+    }
+
+    private var foregroundColor: Color {
+        if isSelected {
+            return controlActiveState == .key ? .white : .primary
+        }
+        return .primary
+    }
+
+    @ViewBuilder
+    private func backgroundView(isPressed: Bool) -> some View {
+        if isSelected {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(controlActiveState == .key ? Color.accentColor : Color.secondary.opacity(0.22))
+        } else if isPressed {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(0.08))
+        }
     }
 }
 

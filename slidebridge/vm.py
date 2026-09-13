@@ -421,10 +421,6 @@ def launch_vm_helper(
     if helper_exe is None:
         project_root = Path(__file__).resolve().parent.parent
         default_exe = project_root / "dist" / "origin-bridge.exe"
-        if not default_exe.is_file():
-            legacy_exe = project_root / "artifacts" / "bin" / "origin-bridge.exe"
-            if legacy_exe.is_file():
-                default_exe = legacy_exe
         if default_exe.is_file():
             helper_exe = default_exe
         else:

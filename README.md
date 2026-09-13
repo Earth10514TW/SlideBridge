@@ -38,6 +38,62 @@ SlideBridge 採**極致輕量、零多餘依賴**設計。進行圖表修復時�
 
 ---
 
+## 專案結構 (Project Structure)
+
+```text
+SlideBridge/
+├── slidebridge/          # Python 核心引擎與 CLI（PPTX 解析、修復、OLE 提取與回寫、VM 調度）
+├── mac/SlideBridgeApp/   # macOS 原生 SwiftUI 應用程式原始碼
+├── native/origin-bridge/ # Windows 原生 C++ Helper（在 VM 內自動化操作 Origin 存檔與視窗）
+├── patches/              # 上游 libemf2svg 轉換器的 C 原始碼修正補丁
+├── scripts/              # 建置、安裝、整合與自動化腳本
+├── tests/                # 單元測試與回歸測試套件
+│   ├── test_*.py         # Python 單元測試 (228 項)
+│   └── swift/            # Swift 原生回歸測試
+├── docs/                 # 架構設計、效能基準與內部交接手冊
+├── packaging/homebrew/   # Homebrew Formula 與 Cask 發布模板
+├── .github/workflows/    # GitHub Actions 跨平台 CI/CD 自動化測試與建置
+├── pyproject.toml        # Python 套件封裝設定 (PEP 621)
+├── .editorconfig         # 統一 IDE 格式規範
+├── .gitattributes        # 跨平台換行與二進位標記
+├── LICENSE               # GNU General Public License v2.0
+└── README.md
+```
+
+---
+
+## 安裝方式 (Installation)
+
+### 方案 A：透過 Homebrew 安裝
+
+若已訂閱專屬 Tap 倉庫，可透過 `brew` 輕鬆安裝與自動更新：
+
+```sh
+# 1. 訂閱 SlideBridge Tap 倉庫
+brew tap <username>/slidebridge
+
+# 2. 安裝 CLI 指令工具
+brew install slidebridge
+
+# 或安裝 macOS 原生桌面應用程式 (SlideBridge.app)
+brew install --cask slidebridge
+```
+
+### 方案 B：自原始碼安裝 (Source Checkout)
+
+```sh
+git clone https://github.com/<username>/SlideBridge.git
+cd SlideBridge
+
+# 1. 安裝 PowerPoint 系統整合與核心依賴 (resvg)
+bash scripts/install_mac_integration.sh
+
+# 2. 可選：註冊 CLI 指令至系統 Python
+python3 -m pip install -e .
+```
+
+---
+
 ## 三種用法
 
 ### 1. macOS 原生 App（`dist/SlideBridge.app`）

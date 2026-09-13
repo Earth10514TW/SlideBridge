@@ -1,18 +1,27 @@
 #!/usr/bin/env bash
-# Build a patched emf2svg-conv binary from the local upstream checkout.
-# The patch is already applied in artifacts/upstream; this script just builds.
+# Build a patched emf2svg-conv binary from upstream libemf2svg.
 # Output: bin/emf2svg-conv
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SRC="${REPO_ROOT}/artifacts/upstream"
-BUILD="${SRC}/build"
 DEST="${REPO_ROOT}/bin"
 
-if [ ! -d "${SRC}/src" ]; then
-    echo "ERROR: upstream source not found at ${SRC}" >&2
-    exit 1
+# Locate cached upstream checkout in .build/upstream-libemf2svg,
+# otherwise download and patch into .build/upstream-libemf2svg
+if [ -d "${REPO_ROOT}/.build/upstream-libemf2svg/src" ]; then
+    SRC="${REPO_ROOT}/.build/upstream-libemf2svg"
+elif [ -d "${REPO_ROOT}/artifacts/upstream/src" ]; then
+    SRC="${REPO_ROOT}/artifacts/upstream"
+else
+    echo "==> Upstream source not found locally. Cloning kakwa/libemf2svg..."
+    SRC="${REPO_ROOT}/.build/upstream-libemf2svg"
+    mkdir -p "${REPO_ROOT}/.build"
+    git clone --depth 1 https://github.com/kakwa/libemf2svg.git "${SRC}"
+    echo "==> Applying SlideBridge fixes from patches/..."
+    git -C "${SRC}" apply "${REPO_ROOT}/patches/slidebridge_pen_fix.patch"
+    git -C "${SRC}" apply "${REPO_ROOT}/patches/slidebridge_patinvert_monopattern_fix.patch"
 fi
+BUILD="${SRC}/build"
 
 # On macOS, argp-standalone is a keg-only Homebrew formula.
 # Help CMake's Findargp.cmake locate the argp headers and library.

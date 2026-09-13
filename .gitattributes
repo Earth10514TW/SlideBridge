@@ -1,0 +1,48 @@
+# Auto-detect text files and normalize line endings
+* text=auto
+
+# Force LF line endings for all Unix shell scripts, source code, patches, and configurations
+*.sh text eol=lf
+*.applescript text eol=lf
+*.py text eol=lf
+*.pyi text eol=lf
+*.swift text eol=lf
+*.cpp text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.hpp text eol=lf
+*.patch text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.plist text eol=lf
+*.txt text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+.editorconfig text eol=lf
+
+# Windows-specific files
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.rc text eol=crlf
+*.manifest text eol=crlf
+
+# Binary file declarations (prevent corrupting files across platforms)
+*.ico binary
+*.icns binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.svg text eol=lf
+*.emf binary
+*.wmf binary
+*.bin binary
+*.exe binary
+*.dll binary
+*.dylib binary
+*.so binary
+*.pptx binary
+*.zip binary
