@@ -398,10 +398,20 @@ class PowerPointIntegrationTests(unittest.TestCase):
             self.assertEqual(rep["member"], "ppt/embeddings/oleObject1.bin")
 
     def test_state_script_compilation(self):
-        from slidebridge.powerpoint import _STATE_SCRIPT_SOURCE, _get_compiled_script
-        compiled_path = _get_compiled_script("query_state_test", _STATE_SCRIPT_SOURCE)
+        import shutil
+        from slidebridge.powerpoint import _get_compiled_script
+        if not shutil.which("osacompile"):
+            self.skipTest("osacompile not available on this platform")
+
+        compiled_path = _get_compiled_script("generic_test", 'on run argv\nreturn "ok"\nend run')
         self.assertIsNotNone(compiled_path)
         self.assertTrue(compiled_path.is_file())
+
+        if Path("/Applications/Microsoft PowerPoint.app").is_dir():
+            from slidebridge.powerpoint import _STATE_SCRIPT_SOURCE
+            real_compiled = _get_compiled_script("query_state_test", _STATE_SCRIPT_SOURCE)
+            self.assertIsNotNone(real_compiled)
+            self.assertTrue(real_compiled.is_file())
 
     def test_grouped_ole_shape_resolution_by_bounds(self):
         grouped_pptx = _make_grouped_test_presentation(self.tmp_path / "grouped.pptx")
