@@ -507,6 +507,7 @@ def edit_active_presentation(
                 "session": str(chosen_session),
                 "in_place": in_place,
                 "backup": None,
+                "backup_retention_days": None,
                 "preview_format": None,
                 "status": "cancelled",
                 "message": "Edit was cancelled by user; presentation left unchanged.",
@@ -532,6 +533,7 @@ def edit_active_presentation(
             "session": str(chosen_session),
             "in_place": in_place,
             "backup": None,
+            "backup_retention_days": None,
             "preview_format": None,
             "status": "unchanged",
             "message": str(exc),
@@ -551,6 +553,7 @@ def edit_active_presentation(
         "session": str(chosen_session),
         "in_place": in_place,
         "backup": writeback_report.get("backup"),
+        "backup_retention_days": writeback_report.get("backup_retention_days"),
         "preview_format": writeback_report.get("preview_format"),
         "status": "success",
     }

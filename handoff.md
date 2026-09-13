@@ -2,6 +2,34 @@
 
 Updated: 2026-09-13. 使用者面向的說明在 [README.md](README.md)，Origin 橋接的架構與安全不變量在 [docs/origin-bridge.md](docs/origin-bridge.md)。本檔只記錄「接手時需要知道、但讀程式碼看不出來」的事。
 
+## 備份改成 App 私有儲存（2026-09-13 已完成）
+
+原地回寫的備份，從「簡報旁邊的 `.sb_backup.pptx`」改成 App 私有儲存區裡會過期的快照。
+
+**為什麼不放簡報旁邊**：檔名固定，第二次原地更新就直接蓋掉上一次的備份；而且那是使用者得自己
+看見、自己清理的東西。改放 `~/Library/Application Support/SlideBridge/backups/<sha256(路徑)[:16]>/`
+之後，簡報資料夾裡永遠只有使用者自己放進去的那份檔案。
+
+**為什麼是 Application Support 而不是 Caches**：系統會自行清除 Caches，一個會自己消失的 undo
+buffer 比沒有更糟。session 目錄仍然留在 Caches，那是刻意的不同取捨（session 用完即丟）。
+
+**保留策略**：預設 7 天、每份簡報 5 份，兩者都是上限，先看年限再看份數。每次建立備份都會順手
+對「其他簡報」套用年限 —— 否則一份改過一次就再也不想動的簡報，其快照會無限期佔空間。
+
+**回復前會先備份現況**：不然回復到錯的版本就等於把好的那份弄丟。因此 `restore_backup()` 本身
+可逆，代價是多一份 `reason="pre-restore"` 的快照。
+
+**兩個踩過的坑（改動時別踩回去）**：
+- `_reconcile()` 會把磁碟上所有 `.pptx` 收進索引。建立備份時若**先複製再 reconcile**，新檔案會
+  被收一次又被 append 一次，同一份檔案在索引裡有兩筆；保留策略刪掉「其中一筆」時連帶刪掉檔案，
+  於是 store 永遠只剩 1 份，且索引指向已刪除的檔案。**必須先 reconcile 再複製。**
+- 回復時要先把快照複製到簡報旁的暫存檔，**再**建立 pre-restore 快照。順序反過來的話，pre-restore
+  觸發的保留策略可能剛好把「正在回復的那一份」刪掉。
+
+**測試**：`tests/test_backup.py`。它把 `SLIDEBRIDGE_BACKUP_DIR` 指到沙箱，所以跑測試不會污染真實的
+Application Support；`PowerPointIntegrationTests.setUp` 也做了同樣的事 —— 少了這步，每次跑測試都會
+在使用者機器上留下孤兒 store。
+
 ## UI 與 ⌘O 修正與驗收（2026-09-12 已完成）
 
 已完成 macOS SwiftUI 介面重構與全域 ⌘O 快捷鍵驗收，並通過自動化 AX 測試：
@@ -74,16 +102,16 @@ Updated: 2026-09-13. 使用者面向的說明在 [README.md](README.md)，Origin
 
 - 真實 Origin95.Graph 簡報：EMF 轉換、輸出檢視、`scripts/verify_package.py` 完整性比對（4 份嵌入 OLE 中只有目標那份改變，其餘 bit-identical、關係重寫、無懸空參照）。
 - Windows 11 Lite VM 上的 PowerShell smoke test（`scripts/smoke_origin_bridge.ps1`）100% 通過。
-- Mac PowerPoint 熱重載、停留在原投影片、`.sb_backup.pptx` 備份。
-- 181 項 Python 單元測試全綠（14 項原生 EMF 需 `SLIDEBRIDGE_TEST_EMF2SVG`），4 項 C++ 持久化測試通過。
+- Mac PowerPoint 熱重載、停留在原投影片、App 私有儲存區的備份快照（簡報旁不留檔案）。
+- 224 項 Python 單元測試全綠（14 項原生 EMF 需 `SLIDEBRIDGE_TEST_EMF2SVG`），4 項 C++ 持久化測試通過。
 
 注意：`verify_package.py` 若沒有用 `--allow-parts` 指名被改動的 OLE，會回報 `passed: false`，那是預期行為不是失敗。
 
 ## 常用指令
 
 ```sh
-python3 -m unittest discover -s tests -q                                              # 181 項（14 項原生 EMF skip）
-SLIDEBRIDGE_TEST_EMF2SVG=bin/emf2svg-conv python3 -m unittest discover -s tests -v     # 181 項全跑
+python3 -m unittest discover -s tests -q                                              # 224 項（14 項原生 EMF skip）
+SLIDEBRIDGE_TEST_EMF2SVG=bin/emf2svg-conv python3 -m unittest discover -s tests -v     # 224 項全跑
 bash scripts/build_patched_emf2svg.sh                                                 # 重建修補版轉換器
 bash scripts/build_origin_bridge.sh                                                   # 交叉編譯 Windows helper
 bash scripts/build_mac_app.sh                                                         # 重建 SwiftUI App

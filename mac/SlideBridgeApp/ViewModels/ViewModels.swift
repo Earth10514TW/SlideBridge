@@ -121,6 +121,17 @@ public class OriginEditViewModel: ObservableObject {
     @Published public var isMonitoring = false
     @Published public var isAccessibilityGranted = false
 
+    // Backups are surfaced here rather than in the Finder: they expire on their
+    // own, so the app is the only place that needs to know they exist.
+    @Published public var backupList: BackupListReport?
+    @Published public var isLoadingBackups = false
+    @Published public var isRestoringBackup = false
+    @Published public var isClearingBackups = false
+    @Published public var pendingRestore: BackupEntry?
+    @Published public var showClearBackupsConfirm = false
+    @Published public var backupMessage: String?
+    @Published public var showBackupMessage = false
+
     public let interceptor = PPTAlertInterceptor.shared
 
     public init() {
@@ -170,8 +181,102 @@ public class OriginEditViewModel: ObservableObject {
                 let report = try await BridgeProcess.shared.editActive()
                 self.editReport = report
                 self.isEditing = false
+                if report.status == "success" {
+                    self.refreshBackups()
+                }
             } catch {
                 self.isEditing = false
+                self.errorMessage = error.localizedDescription
+                self.showErrorAlert = true
+            }
+        }
+    }
+
+    public var isBackupBusy: Bool {
+        isLoadingBackups || isRestoringBackup || isClearingBackups
+    }
+
+    /// The menu command can fire before the list has ever been loaded, so the
+    /// confirmation would otherwise claim "0 backups". Refresh first and let
+    /// the completion open the dialog once the count is real.
+    private var pendingClearConfirmation = false
+
+    public func requestClearAllBackups() {
+        guard backupList == nil else {
+            showClearBackupsConfirm = true
+            refreshBackups()   // keep the count honest while the dialog is up
+            return
+        }
+        pendingClearConfirmation = true
+        if isLoadingBackups {
+            return  // the in-flight load will resolve it
+        }
+        refreshBackups()
+    }
+
+    public func refreshBackups() {
+        guard !isBackupBusy else { return }
+        isLoadingBackups = true
+        Task {
+            do {
+                let report = try await BridgeProcess.shared.backupsList()
+                self.backupList = report
+                self.isLoadingBackups = false
+                if self.pendingClearConfirmation {
+                    self.pendingClearConfirmation = false
+                    self.showClearBackupsConfirm = true
+                }
+            } catch {
+                self.isLoadingBackups = false
+                self.pendingClearConfirmation = false
+                self.errorMessage = error.localizedDescription
+                self.showErrorAlert = true
+            }
+        }
+    }
+
+    public func performRestore(_ entry: BackupEntry) {
+        guard !isBackupBusy else { return }
+        pendingRestore = nil
+        isRestoringBackup = true
+        let lm = LanguageManager.shared
+        Task {
+            do {
+                let report = try await BridgeProcess.shared.backupsRestore(
+                    presentation: URL(fileURLWithPath: entry.source),
+                    backupID: entry.id
+                )
+                self.isRestoringBackup = false
+                self.backupMessage = report.status == "unchanged"
+                    ? lm.t(.backupRestoreUnchangedMessage)
+                    : lm.t(.backupRestoredMessage)
+                self.showBackupMessage = true
+                self.refreshBackups()
+            } catch {
+                self.isRestoringBackup = false
+                self.errorMessage = error.localizedDescription
+                self.showErrorAlert = true
+            }
+        }
+    }
+
+    public func clearBackups() {
+        guard !isBackupBusy else { return }
+        showClearBackupsConfirm = false
+        isClearingBackups = true
+        let lm = LanguageManager.shared
+        Task {
+            do {
+                let report = try await BridgeProcess.shared.backupsClear()
+                self.isClearingBackups = false
+                self.backupMessage = lm.t(.backupClearedMessage(
+                    count: report.removed_count,
+                    size: report.formattedRemovedSize
+                ))
+                self.showBackupMessage = true
+                self.refreshBackups()
+            } catch {
+                self.isClearingBackups = false
                 self.errorMessage = error.localizedDescription
                 self.showErrorAlert = true
             }

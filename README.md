@@ -104,7 +104,28 @@ python3 -m slidebridge writeback-ole input.pptx \
   --session .cache/ole-session -o .cache/presentation_writeback.pptx --json
 ```
 
-`writeback-ole` 強制成對回寫（OLE 與預覽圖缺一即中止），比對 `manifest.json` 的 `source_sha256` 偵測來源衝突並預設拒絕，輸出採暫存檔原子替換。`--in-place` 原地更新並自動保留 `.sb_backup.pptx`。
+`writeback-ole` 強制成對回寫（OLE 與預覽圖缺一即中止），比對 `manifest.json` 的 `source_sha256` 偵測來源衝突並預設拒絕，輸出採暫存檔原子替換。`--in-place` 原地更新，且更新前會先留一份可回復的快照。
+
+### 備份與回復
+
+`--in-place` 覆寫的是你原本的簡報，所以每次都會先留一份快照。快照**不會出現在簡報旁邊**，而是收在 App 的私有儲存區：
+
+```
+~/Library/Application Support/SlideBridge/backups/
+```
+
+保留策略預設 **7 天**、每份簡報最多 **5 份**，超過即自動清除（可用 `SLIDEBRIDGE_BACKUP_RETENTION_DAYS` / `SLIDEBRIDGE_BACKUP_KEEP` 覆寫）。久未編輯的簡報，其快照也會在下一次寫入時依年限清掉。
+
+回復一律從 App 操作：Origin 編輯頁的「備份與回復」卡片，或 File 選單的「刪除所有備份…」（任何分頁都能用）。CLI 對應指令：
+
+```sh
+python3 -m slidebridge backups list                     # 所有簡報的快照與佔用空間
+python3 -m slidebridge backups list presentation.pptx   # 只列這一份
+python3 -m slidebridge backups restore presentation.pptx [--id <id>]   # 預設回復最新一份
+python3 -m slidebridge backups clear [presentation.pptx]              # 確認沒問題就清掉
+```
+
+回復前會先幫「目前版本」也留一份快照，所以回復本身同樣可以再還原。
 
 Windows 端需 `origin-bridge.exe`（交叉編譯：`bash scripts/build_origin_bridge.sh`）。
 
@@ -120,7 +141,7 @@ Windows 端需 `origin-bridge.exe`（交叉編譯：`bash scripts/build_origin_b
 
 全綠後：
 
-1. **先用副本測**：`edit-active` 原地覆寫（會留 `.sb_backup.pptx`）。
+1. **先用副本測**：`edit-active` 原地覆寫（App 的備份區會留一份可回復的快照）。
 2. 在 PowerPoint 點選圖表（必須是選取狀態），觸發服務選單項目；首次會問自動化權限，選允許。
 3. VM 躍至前台，Helper 與 Origin 開啟；改一個明顯可見的東西（例如軸標題）。
 4. **在 Origin 內按 Ctrl+S 存檔**——少了這步，序列化出來的仍是未變更文件。
@@ -136,11 +157,11 @@ Windows 端需 `origin-bridge.exe`（交叉編譯：`bash scripts/build_origin_b
 - 保留 OLE bytes 不等於 Office 會接受所有變體；輸出仍需在 Mac PowerPoint 檢視，並在 Windows + Origin 驗證編輯流程。數位簽章修改後不再有效。
 - **尚未開始**：PowerPoint Add-in。核心目前依賴本機 resvg，移植到 Office WebView 需要轉換服務或 WASM 後端。
 
-測試：181 項 Python 單元測試（含 14 項原生 EMF 渲染測試），另有 4 項 C++ 持久化測試。
+測試：224 項 Python 單元測試（含 14 項原生 EMF 渲染測試），另有 4 項 C++ 持久化測試。
 
 ```sh
-python3 -m unittest discover -s tests -v                                        # 181 項，其中 14 項原生 EMF skip
-SLIDEBRIDGE_TEST_EMF2SVG=bin/emf2svg-conv python3 -m unittest discover -s tests -v   # 181 項全跑
+python3 -m unittest discover -s tests -v                                        # 224 項，其中 14 項原生 EMF skip
+SLIDEBRIDGE_TEST_EMF2SVG=bin/emf2svg-conv python3 -m unittest discover -s tests -v   # 224 項全跑
 python3 scripts/verify_package.py input.pptx input_fixed.pptx                   # 真實樣本完整性比對
 ```
 

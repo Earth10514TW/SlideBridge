@@ -23,9 +23,10 @@ struct SlideBridgeApp: App {
         .windowToolbarStyle(.unified)
         .commands {
             SidebarCommands()
-            PresentationCommands(
+            FileCommands(
                 languageManager: languageManager,
                 batchRepairVM: batchRepairVM,
+                originEditVM: originEditVM,
                 appState: appState
             )
             CommandMenu(languageManager.t(.languageMenu)) {
@@ -50,9 +51,10 @@ struct SlideBridgeApp: App {
 }
 
 
-private struct PresentationCommands: Commands {
+private struct FileCommands: Commands {
     @ObservedObject var languageManager: LanguageManager
     @ObservedObject var batchRepairVM: BatchRepairViewModel
+    @ObservedObject var originEditVM: OriginEditViewModel
     @ObservedObject var appState: AppState
 
     var body: some Commands {
@@ -64,6 +66,16 @@ private struct PresentationCommands: Commands {
             }
             .keyboardShortcut("o", modifiers: .command)
             .disabled(batchRepairVM.isScanning || batchRepairVM.isFixing || batchRepairVM.isSelectingFile)
+
+            Divider()
+
+            // Reachable from any tab: backups outlive the edit that created
+            // them, so discarding them should not require finding that page.
+            Button(languageManager.t(.backupClearAllMenu)) {
+                appState.selectedTab = .originEdit
+                originEditVM.requestClearAllBackups()
+            }
+            .disabled(originEditVM.isBackupBusy || (originEditVM.backupList?.count ?? 0) == 0)
         }
     }
 }
