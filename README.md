@@ -1,5 +1,8 @@
 # SlideBridge
 
+[![CI](https://github.com/Earth10514TW/SlideBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/Earth10514TW/SlideBridge/actions/workflows/ci.yml)
+[![License: GPL v2](https://img.shields.io/badge/License-GPL_v2-blue.svg)](LICENSE)
+
 修復 PowerPoint 在 Mac 上顯示異常的 Windows／Origin EMF 圖形：掃描 `.pptx` 中的 EMF／WMF，用本機轉換器產生 PNG 重新接上關聯，輸出新簡報，同時保留原始 OLE 二進位（Windows 端仍可雙擊用 Origin 編輯）。另有已驗證的 [Origin OLE 編輯橋接](docs/origin-bridge.md)：從簡報抽出 OLE、在 Windows VM 用 Origin 編輯、再成對寫回，全程不需要 Windows PowerPoint。
 
 ## 系統需求與依賴安裝 (Prerequisites & Dependencies)
@@ -70,7 +73,7 @@ SlideBridge/
 
 ```sh
 # 1. 訂閱 SlideBridge Tap 倉庫
-brew tap <username>/slidebridge
+brew tap Earth10514TW/slidebridge
 
 # 2. 安裝 CLI 指令工具
 brew install slidebridge
@@ -82,7 +85,7 @@ brew install --cask slidebridge
 ### 方案 B：自原始碼安裝 (Source Checkout)
 
 ```sh
-git clone https://github.com/<username>/SlideBridge.git
+git clone https://github.com/Earth10514TW/SlideBridge.git
 cd SlideBridge
 
 # 1. 安裝 PowerPoint 系統整合與核心依賴 (resvg)
