@@ -143,6 +143,111 @@ def _make_test_presentation(target_path: Path) -> Path:
     return target_path
 
 
+def _make_grouped_test_presentation(target_path: Path) -> Path:
+    pres_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<p:sldIdLst>'
+        '<p:sldId id="256" r:id="rId1"/>'
+        '<p:sldId id="257" r:id="rId2"/>'
+        '</p:sldIdLst></p:presentation>'
+    ).encode("utf-8")
+
+    pres_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<Relationships xmlns="{REL_NS}">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>'
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"/>'
+        '</Relationships>'
+    ).encode("utf-8")
+
+    # Slide 1: Group 10 contains two OLE charts with offset & scaling
+    # grp: off=(1270000, 1270000), ext=(5080000, 2540000), chOff=(0, 0), chExt=(2540000, 1270000)
+    # -> scale_x = 2.0, scale_y = 2.0
+    # child 1: off=(0, 0), ext=(1270000, 1270000)
+    # -> world: x = 1270000 EMU = 100 pt, y = 1270000 EMU = 100 pt, cx = 2540000 EMU = 200 pt, cy = 2540000 EMU = 200 pt
+    # child 2: off=(1270000, 0), ext=(1270000, 1270000)
+    # -> world: x = 1270000 + 2540000 = 3810000 EMU = 300 pt, y = 100 pt, cx = 200 pt, cy = 200 pt
+    slide1_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<p:cSld><p:spTree>'
+        '<p:grpSp>'
+        '<p:nvGrpSpPr><p:cNvPr id="10" name="群組 10"/></p:nvGrpSpPr>'
+        '<p:grpSpPr><a:xfrm><a:off x="1270000" y="1270000"/><a:ext cx="5080000" cy="2540000"/><a:chOff x="0" y="0"/><a:chExt cx="2540000" cy="1270000"/></a:xfrm></p:grpSpPr>'
+        '<p:graphicFrame>'
+        '<p:nvGraphicFramePr><p:cNvPr id="11" name="物件 11"/></p:nvGraphicFramePr>'
+        '<p:xfrm><a:off x="0" y="0"/><a:ext cx="1270000" cy="1270000"/></p:xfrm>'
+        '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/presentationml/2006/ole">'
+        '<p:oleObj r:id="rId11"><p:embed/></p:oleObj>'
+        '</a:graphicData></a:graphic>'
+        '</p:graphicFrame>'
+        '<p:graphicFrame>'
+        '<p:nvGraphicFramePr><p:cNvPr id="12" name="物件 12"/></p:nvGraphicFramePr>'
+        '<p:xfrm><a:off x="1270000" y="0"/><a:ext cx="1270000" cy="1270000"/></p:xfrm>'
+        '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/presentationml/2006/ole">'
+        '<p:oleObj r:id="rId12"><p:embed/></p:oleObj>'
+        '</a:graphicData></a:graphic>'
+        '</p:graphicFrame>'
+        '</p:grpSp>'
+        '</p:spTree></p:cSld></p:sld>'
+    ).encode("utf-8")
+
+    slide1_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<Relationships xmlns="{REL_NS}">'
+        f'<Relationship Id="rId11" Type="{OLE_REL}" Target="../embeddings/oleObject11.bin"/>'
+        f'<Relationship Id="rId12" Type="{OLE_REL}" Target="../embeddings/oleObject12.bin"/>'
+        '</Relationships>'
+    ).encode("utf-8")
+
+    # Slide 2: Group 20 contains exactly 1 chart
+    slide2_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<p:cSld><p:spTree>'
+        '<p:grpSp>'
+        '<p:nvGrpSpPr><p:cNvPr id="20" name="Group 20"/></p:nvGrpSpPr>'
+        '<p:grpSpPr><a:xfrm><a:off x="635000" y="635000"/><a:ext cx="2540000" cy="2540000"/><a:chOff x="0" y="0"/><a:chExt cx="2540000" cy="2540000"/></a:xfrm></p:grpSpPr>'
+        '<p:graphicFrame>'
+        '<p:nvGraphicFramePr><p:cNvPr id="21" name="物件 21"/></p:nvGraphicFramePr>'
+        '<p:xfrm><a:off x="0" y="0"/><a:ext cx="2540000" cy="2540000"/></p:xfrm>'
+        '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/presentationml/2006/ole">'
+        '<p:oleObj r:id="rId21"><p:embed/></p:oleObj>'
+        '</a:graphicData></a:graphic>'
+        '</p:graphicFrame>'
+        '</p:grpSp>'
+        '</p:spTree></p:cSld></p:sld>'
+    ).encode("utf-8")
+
+    slide2_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<Relationships xmlns="{REL_NS}">'
+        f'<Relationship Id="rId21" Type="{OLE_REL}" Target="../embeddings/oleObject21.bin"/>'
+        '</Relationships>'
+    ).encode("utf-8")
+
+    cfb = _cfb_payload()
+
+    with zipfile.ZipFile(target_path, "w") as z:
+        z.writestr("ppt/presentation.xml", pres_xml)
+        z.writestr("ppt/_rels/presentation.xml.rels", pres_rels)
+        z.writestr("ppt/slides/slide1.xml", slide1_xml)
+        z.writestr("ppt/slides/_rels/slide1.xml.rels", slide1_rels)
+        z.writestr("ppt/slides/slide2.xml", slide2_xml)
+        z.writestr("ppt/slides/_rels/slide2.xml.rels", slide2_rels)
+        z.writestr("ppt/embeddings/oleObject11.bin", cfb)
+        z.writestr("ppt/embeddings/oleObject12.bin", cfb)
+        z.writestr("ppt/embeddings/oleObject21.bin", cfb)
+
+    return target_path
+
+
 class PowerPointIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -297,6 +402,59 @@ class PowerPointIntegrationTests(unittest.TestCase):
         compiled_path = _get_compiled_script("query_state_test", _STATE_SCRIPT_SOURCE)
         self.assertIsNotNone(compiled_path)
         self.assertTrue(compiled_path.is_file())
+
+    def test_grouped_ole_shape_resolution_by_bounds(self):
+        grouped_pptx = _make_grouped_test_presentation(self.tmp_path / "grouped.pptx")
+        # Child 1 on Slide 1: mapped world bounds = (100.0, 100.0, 200.0, 200.0)
+        res1 = resolve_ole_from_selection(
+            grouped_pptx,
+            slide_index=1,
+            sel_bounds=(100.0, 100.0, 200.0, 200.0),
+            sel_name="Object 11",
+        )
+        self.assertEqual(res1["member"], "ppt/embeddings/oleObject11.bin")
+        self.assertEqual(res1["shape_name"], "物件 11")
+        self.assertEqual(res1["parent_group_name"], "群組 10")
+        self.assertAlmostEqual(res1["diff"], 0.0, places=3)
+
+        # Child 2 on Slide 1: mapped world bounds = (300.0, 100.0, 200.0, 200.0)
+        res2 = resolve_ole_from_selection(
+            grouped_pptx,
+            slide_index=1,
+            sel_bounds=(300.0, 100.0, 200.0, 200.0),
+            sel_name="Object 12",
+        )
+        self.assertEqual(res2["member"], "ppt/embeddings/oleObject12.bin")
+        self.assertEqual(res2["shape_name"], "物件 12")
+        self.assertEqual(res2["parent_group_name"], "群組 10")
+        self.assertAlmostEqual(res2["diff"], 0.0, places=3)
+
+    def test_grouped_ole_shape_single_chart_in_group_auto_selects(self):
+        grouped_pptx = _make_grouped_test_presentation(self.tmp_path / "grouped_single.pptx")
+        # Slide 2 has a group "Group 20" containing exactly 1 chart.
+        # Selecting the outer group container must auto-resolve to that chart.
+        res = resolve_ole_from_selection(
+            grouped_pptx,
+            slide_index=2,
+            sel_bounds=(50.0, 50.0, 200.0, 200.0),
+            sel_name="Group 20",
+        )
+        self.assertEqual(res["member"], "ppt/embeddings/oleObject21.bin")
+        self.assertEqual(res["shape_name"], "物件 21")
+
+    def test_grouped_ole_shape_multiple_charts_in_group_raises_informative_error(self):
+        grouped_pptx = _make_grouped_test_presentation(self.tmp_path / "grouped_multi.pptx")
+        # Slide 1 has a group "群組 10" with 2 charts. Selecting the group directly must raise.
+        with self.assertRaises(SlideBridgeError) as ctx:
+            resolve_ole_from_selection(
+                grouped_pptx,
+                slide_index=1,
+                sel_bounds=(100.0, 100.0, 400.0, 200.0),
+                sel_name="Group 10",
+            )
+        err_msg = str(ctx.exception)
+        self.assertIn("Selected group 'Group 10' on slide 1 contains 2 Origin charts", err_msg)
+        self.assertIn("Please click specifically on the chart within the group", err_msg)
 
 
 class DefaultSessionParentTests(unittest.TestCase):

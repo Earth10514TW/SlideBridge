@@ -63,8 +63,19 @@ _STATE_SCRIPT_SOURCE = """on run argv
         
         if isShapeSel then
             try
-                set sr to shape range of sel
-                set s to shape 1 of sr
+                set hasChild to false
+                try
+                    if has child shape range of sel then
+                        set hasChild to true
+                    end if
+                end try
+                if hasChild then
+                    set csr to child shape range of sel
+                    set s to shape 1 of csr
+                else
+                    set sr to shape range of sel
+                    set s to shape 1 of sr
+                end if
                 set vName to name of s as text
                 set vTop to (top of s) as text
                 set vLeft to (left position of s) as text
@@ -212,8 +223,19 @@ def get_active_powerpoint_state(save_first: bool = False) -> dict:
         
         if isShapeSel then
             try
-                set sr to shape range of sel
-                set s to shape 1 of sr
+                set hasChild to false
+                try
+                    if has child shape range of sel then
+                        set hasChild to true
+                    end if
+                end try
+                if hasChild then
+                    set csr to child shape range of sel
+                    set s to shape 1 of csr
+                else
+                    set sr to shape range of sel
+                    set s to shape 1 of sr
+                end if
                 set vName to name of s as text
                 set vTop to (top of s) as text
                 set vLeft to (left position of s) as text
@@ -367,52 +389,180 @@ def resolve_ole_from_selection(
                 resolved = posixpath.normpath(posixpath.join(posixpath.dirname(slide_part), target))
                 slide_rels[r.attrib["Id"]] = resolved
 
-        candidates = []
-        for gf in slide_tree.iter(f"{_P_NS}graphicFrame"):
-            ole_obj = gf.find(f".//{_P_NS}oleObj")
-            if ole_obj is None:
-                continue
+def _parse_xfrm(elem: ElementTree.Element | None) -> tuple[float, float, float, float]:
+    """Parse an <a:xfrm> or <p:xfrm> element into (x, y, cx, cy) in EMU."""
+    if elem is None:
+        return (0.0, 0.0, 0.0, 0.0)
+    off = elem.find(f"{_A_NS}off")
+    ext = elem.find(f"{_A_NS}ext")
+    x = float(off.attrib.get("x", 0)) if off is not None else 0.0
+    y = float(off.attrib.get("y", 0)) if off is not None else 0.0
+    cx = float(ext.attrib.get("cx", 0)) if ext is not None else 0.0
+    cy = float(ext.attrib.get("cy", 0)) if ext is not None else 0.0
+    return (x, y, cx, cy)
 
+
+def _parse_grp_xfrm(
+    elem: ElementTree.Element | None,
+) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
+    """Parse group xfrm into ((off_x, off_y, ext_cx, ext_cy), (chOff_x, chOff_y, chExt_cx, chExt_cy)) in EMU."""
+    if elem is None:
+        return ((0.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 0.0))
+    gx, gy, gcx, gcy = _parse_xfrm(elem)
+    chOff = elem.find(f"{_A_NS}chOff")
+    chExt = elem.find(f"{_A_NS}chExt")
+    chx = float(chOff.attrib.get("x", 0)) if chOff is not None else 0.0
+    chy = float(chOff.attrib.get("y", 0)) if chOff is not None else 0.0
+    chcx = float(chExt.attrib.get("cx", 0)) if chExt is not None else gcx
+    chcy = float(chExt.attrib.get("cy", 0)) if chExt is not None else gcy
+    return ((gx, gy, gcx, gcy), (chx, chy, chcx, chcy))
+
+
+def _apply_transforms(
+    local_box: tuple[float, float, float, float],
+    transform_stack: list[tuple[tuple[float, float, float, float], tuple[float, float, float, float]]],
+) -> tuple[float, float, float, float]:
+    """Apply stacked group coordinate transforms (innermost to outermost) to calculate slide absolute EMU."""
+    x, y, w, h = local_box
+    for (gx, gy, gcx, gcy), (chx, chy, chcx, chcy) in reversed(transform_stack):
+        sx = (gcx / chcx) if chcx != 0 else 1.0
+        sy = (gcy / chcy) if chcy != 0 else 1.0
+        x = gx + (x - chx) * sx
+        y = gy + (y - chy) * sy
+        w = w * sx
+        h = h * sy
+    return (x, y, w, h)
+
+
+def _collect_slide_ole_candidates(
+    element: ElementTree.Element,
+    slide_rels: dict[str, str],
+    slide_part: str,
+    transform_stack: list[tuple[tuple[float, float, float, float], tuple[float, float, float, float]]],
+    parent_group_name: str | None = None,
+    parent_group_id: str | None = None,
+) -> list[dict]:
+    """Recursively traverse the shape tree, handling group shapes, coordinate transforms, and OLE frames."""
+    candidates = []
+    tag = element.tag.rsplit("}", 1)[-1]
+
+    if tag == "grpSp":
+        c_nv = element.find(f".//{_P_NS}cNvPr")
+        grp_name = c_nv.attrib.get("name", "") if c_nv is not None else ""
+        grp_id = c_nv.attrib.get("id", "") if c_nv is not None else ""
+        grpPr = element.find(f"{_P_NS}grpSpPr")
+        xfrm = grpPr.find(f"{_A_NS}xfrm") if grpPr is not None else None
+        new_stack = list(transform_stack)
+        if xfrm is not None:
+            new_stack.append(_parse_grp_xfrm(xfrm))
+        for child in element:
+            candidates.extend(
+                _collect_slide_ole_candidates(
+                    child,
+                    slide_rels=slide_rels,
+                    slide_part=slide_part,
+                    transform_stack=new_stack,
+                    parent_group_name=grp_name or parent_group_name,
+                    parent_group_id=grp_id or parent_group_id,
+                )
+            )
+        return candidates
+
+    if tag == "graphicFrame":
+        ole_obj = element.find(f".//{_P_NS}oleObj")
+        if ole_obj is not None:
             r_id = ole_obj.attrib.get(f"{_R_NS}id")
             member = slide_rels.get(r_id)
-            if not member or not member.startswith("ppt/embeddings/"):
-                continue
+            if member and member.startswith("ppt/embeddings/"):
+                c_nv_pr = element.find(f".//{_P_NS}cNvPr")
+                sh_name = c_nv_pr.attrib.get("name", "") if c_nv_pr is not None else ""
+                sh_id = c_nv_pr.attrib.get("id", "") if c_nv_pr is not None else ""
+                xfrm = element.find(f".//{_P_NS}xfrm")
+                if xfrm is None:
+                    xfrm = element.find(f".//{_A_NS}xfrm")
+                local_box = _parse_xfrm(xfrm)
+                wx, wy, ww, wh = _apply_transforms(local_box, transform_stack)
+                candidates.append({
+                    "member": member,
+                    "shape_name": sh_name,
+                    "shape_id": sh_id,
+                    "slide_part": slide_part,
+                    "bounds": (wx / _EMU_PER_PT, wy / _EMU_PER_PT, ww / _EMU_PER_PT, wh / _EMU_PER_PT),
+                    "parent_group_name": parent_group_name,
+                    "parent_group_id": parent_group_id,
+                })
+        return candidates
 
-            c_nv_pr = gf.find(f".//{_P_NS}cNvPr")
-            sh_name = c_nv_pr.attrib.get("name", "") if c_nv_pr is not None else ""
-            sh_id = c_nv_pr.attrib.get("id", "") if c_nv_pr is not None else ""
+    for child in element:
+        candidates.extend(
+            _collect_slide_ole_candidates(
+                child,
+                slide_rels=slide_rels,
+                slide_part=slide_part,
+                transform_stack=transform_stack,
+                parent_group_name=parent_group_name,
+                parent_group_id=parent_group_id,
+            )
+        )
+    return candidates
 
-            xfrm = gf.find(f".//{_P_NS}xfrm")
-            if xfrm is None:
-                xfrm = gf.find(f".//{_A_NS}xfrm")
-            top = left = width = height = 0.0
-            if xfrm is not None:
-                off = xfrm.find(f"{_A_NS}off")
-                ext = xfrm.find(f"{_A_NS}ext")
-                if off is not None:
-                    left = float(off.attrib.get("x", 0)) / _EMU_PER_PT
-                    top = float(off.attrib.get("y", 0)) / _EMU_PER_PT
-                if ext is not None:
-                    width = float(ext.attrib.get("cx", 0)) / _EMU_PER_PT
-                    height = float(ext.attrib.get("cy", 0)) / _EMU_PER_PT
 
+def resolve_ole_from_selection(
+    pptx_path: os.PathLike[str] | str,
+    slide_index: int,
+    sel_bounds: tuple[float, float, float, float] | None = None,
+    sel_name: str | None = None,
+) -> dict:
+    """Match a PowerPoint selection (by bounds or name) on a slide to an embedded OLE member.
+
+    Returns dict containing:
+      - member: str (e.g. "ppt/embeddings/oleObject3.bin")
+      - shape_name: str
+      - shape_id: str
+      - slide_part: str
+      - bounds: tuple (left, top, width, height) in points
+      - diff: float (geometric distance, 0.0 for exact match)
+    """
+    path_val = _path_string(pptx_path)
+    if not os.path.isfile(path_val):
+        raise SlideBridgeError(f"presentation file not found: {path_val}")
+
+    with zipfile.ZipFile(path_val, "r") as archive:
+        slides_in_order = _get_ordered_slide_parts(archive)
+        if slide_index < 1 or slide_index > len(slides_in_order):
+            raise SlideBridgeError(
+                f"slide index {slide_index} out of range (presentation has {len(slides_in_order)} slides)"
+            )
+
+        slide_part = slides_in_order[slide_index - 1]
+        slide_tree = ElementTree.fromstring(archive.read(slide_part))
+
+        rels_part = posixpath.dirname(slide_part) + "/_rels/" + posixpath.basename(slide_part) + ".rels"
+        slide_rels = {}
+        if rels_part in archive.namelist():
+            rels_tree = ElementTree.fromstring(archive.read(rels_part))
+            for r in rels_tree.findall(f"{_REL_NS}Relationship"):
+                target = r.attrib.get("Target", "")
+                resolved = posixpath.normpath(posixpath.join(posixpath.dirname(slide_part), target))
+                slide_rels[r.attrib["Id"]] = resolved
+
+        candidates = _collect_slide_ole_candidates(
+            slide_tree,
+            slide_rels=slide_rels,
+            slide_part=slide_part,
+            transform_stack=[],
+        )
+
+        for c in candidates:
             diff = 999999.0
             if sel_bounds:
                 diff = (
-                    abs(left - sel_bounds[0])
-                    + abs(top - sel_bounds[1])
-                    + abs(width - sel_bounds[2])
-                    + abs(height - sel_bounds[3])
+                    abs(c["bounds"][0] - sel_bounds[0])
+                    + abs(c["bounds"][1] - sel_bounds[1])
+                    + abs(c["bounds"][2] - sel_bounds[2])
+                    + abs(c["bounds"][3] - sel_bounds[3])
                 )
-
-            candidates.append({
-                "member": member,
-                "shape_name": sh_name,
-                "shape_id": sh_id,
-                "slide_part": slide_part,
-                "bounds": (left, top, width, height),
-                "diff": diff,
-            })
+            c["diff"] = diff
 
     if not candidates:
         raise SlideBridgeError(f"No Origin OLE charts found on slide {slide_index}.")
@@ -425,19 +575,37 @@ def resolve_ole_from_selection(
             return best
 
     # Strategy 2: Shape name match (e.g. matching "Object 10" or "物件 10")
+    digits_sel = re.findall(r"\d+", sel_name) if sel_name else []
     if sel_name:
         for c in candidates:
             if c["shape_name"].strip() == sel_name.strip():
                 return c
         # Match trailing digits (e.g. "10" from "Object 10" and "物件 10")
-        digits_sel = re.findall(r"\d+", sel_name)
         if digits_sel:
             for c in candidates:
                 digits_cand = re.findall(r"\d+", c["shape_name"])
                 if digits_cand == digits_sel:
                     return c
 
-    # Strategy 3: If only 1 candidate exists on this slide, auto-select it
+    # Strategy 3: Group selection match (user selected the outer group container)
+    if sel_name:
+        group_cands = [
+            c for c in candidates
+            if c.get("parent_group_name") and (
+                c["parent_group_name"].strip() == sel_name.strip()
+                or (digits_sel and re.findall(r"\d+", c["parent_group_name"]) == digits_sel)
+            )
+        ]
+        if len(group_cands) == 1:
+            return group_cands[0]
+        elif len(group_cands) > 1:
+            grp_summary = ", ".join(f"'{c['shape_name']}' ({c['member']})" for c in group_cands)
+            raise SlideBridgeError(
+                f"Selected group '{sel_name}' on slide {slide_index} contains {len(group_cands)} Origin charts ({grp_summary}). "
+                "Please click specifically on the chart within the group in PowerPoint before editing."
+            )
+
+    # Strategy 4: If only 1 candidate exists on this slide, auto-select it
     if len(candidates) == 1:
         return candidates[0]
 

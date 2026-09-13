@@ -103,15 +103,15 @@ Application Support；`PowerPointIntegrationTests.setUp` 也做了同樣的事 �
 - 真實 Origin95.Graph 簡報：EMF 轉換、輸出檢視、`scripts/verify_package.py` 完整性比對（4 份嵌入 OLE 中只有目標那份改變，其餘 bit-identical、關係重寫、無懸空參照）。
 - Windows 11 Lite VM 上的 PowerShell smoke test（`scripts/smoke_origin_bridge.ps1`）100% 通過。
 - Mac PowerPoint 熱重載、停留在原投影片、App 私有儲存區的備份快照（簡報旁不留檔案）。
-- 224 項 Python 單元測試全綠（14 項原生 EMF 需 `SLIDEBRIDGE_TEST_EMF2SVG`），4 項 C++ 持久化測試通過。
+- 227 項 Python 單元測試全綠（14 項原生 EMF 需 `SLIDEBRIDGE_TEST_EMF2SVG`），4 項 C++ 持久化測試通過。
 
 注意：`verify_package.py` 若沒有用 `--allow-parts` 指名被改動的 OLE，會回報 `passed: false`，那是預期行為不是失敗。
 
 ## 常用指令
 
 ```sh
-python3 -m unittest discover -s tests -q                                              # 224 項（14 項原生 EMF skip）
-SLIDEBRIDGE_TEST_EMF2SVG=bin/emf2svg-conv python3 -m unittest discover -s tests -v     # 224 項全跑
+python3 -m unittest discover -s tests -q                                              # 227 項（14 項原生 EMF skip）
+SLIDEBRIDGE_TEST_EMF2SVG=bin/emf2svg-conv python3 -m unittest discover -s tests -v     # 227 項全跑
 bash scripts/build_patched_emf2svg.sh                                                 # 重建修補版轉換器
 bash scripts/build_origin_bridge.sh                                                   # 交叉編譯 Windows helper
 bash scripts/build_mac_app.sh                                                         # 重建 SwiftUI App
@@ -301,11 +301,12 @@ dependency，`BUTTON` 就退回 **Windows 2000 經典外觀**——這才是「�
   24 = RT_MANIFEST）＋ `101 ICON "origin-bridge.ico"`。
   **101 必須等於 `main.cpp` 的 `kAppIconId`**；PE 裡第一個 ICON 資源同時是 Explorer
   與工作列用的圖示。
-- `origin-bridge.ico`：**沿用 macOS 的 `AppIcon.png`**，兩個平台同一個品牌記號。
-  單檔含 16/32/48/64/128/256 六種尺寸，共 **20,081 bytes**。
+- `origin-bridge.ico`：**採用專屬 Origin 橋接圖示**（區隔 macOS AppIcon，呈現圖表跨機橋接視覺）。
+  單檔含 16/32/48/64/128/256 六種尺寸，共 **31,031 bytes**。
+  來源透明原始圖保留於 `native/origin-bridge/origin-bridge.png`（1024×1024）。
 
 **圖示怎麼生的（要重做時照這個）**：來源是
-`mac/SlideBridgeApp/Resources/AppIcon.png`（1024×1024）。**16px 用全彩，其餘尺寸
+`native/origin-bridge/origin-bridge.png`（1024×1024 RGBA）。**16px 用全彩，其餘尺寸
 量化成 256 色調色盤 PNG**——這是體積的關鍵：256px 從 59,710 降到 8,881 bytes。
 直接用 Pillow 的 `save(format="ICO", sizes=[...])` 不量化會是 97,506 bytes。
 Pillow 裝在受管理的 venv：`/Users/earth/.workbuddy-ai/binaries/python/envs/default`。
@@ -326,7 +327,38 @@ Pillow 裝在受管理的 venv：`/Users/earth/.workbuddy-ai/binaries/python/env
 其中圖示 20 KB、manifest 與資源目錄約 3 KB。編譯零警告（`-Wall -Wextra`）。
 **視覺結果未經目視驗證** —— 這台機器碰不到 guest。
 
-> 分支狀態：所有特性分支（feat/app-ui-optimization、fix/ui-language-menu-and-sidebar-selection、feat/pptx-backup、perf/origin-bridge-exe-size）均已完成驗證並合併回 main。此 repo 沒有遠端，全部為本機提交。待辦 #1 的開發從 main 另開分支進行。
+## 群組形狀（Group Shape）子圖表選取與座標變換修復（2026-09-13 已完成）
+
+### 1. 問題根因
+使用者在 PowerPoint 中編輯含有多個 Origin OLE 圖表的投影片（如 Slide 12 包含 6 個圖表）時，經常會將這些圖表與標題或外框組合為**群組（`<p:grpSp>`）**。
+在先前的版本中會拋出：
+`Multiple OLE objects on slide 12 (...). Please select the specific chart shape in PowerPoint before editing.`
+
+根因有兩個：
+1. **AppleScript 盲點**：PowerPoint AppleScript 當使用者在群組內點選子物件時，選取狀態會設定 `has child shape range: true` 並透過 `child shape range of sel` 提供選取的子物件。原本腳本只讀取 `shape range of sel`，抓到的是最外層的父群組容器（如 `Group 25`），導致回傳的名字和幾何尺寸與內部的 6 個子圖表完全對不上。
+2. **DrawingML 座標未變換**：PPTX 規範中，`<p:grpSp>` 內子物件的 `<a:off>` 和 `<a:ext>` 是相對於群組內部座標空間（`chOff`/`chExt`）的局部座標，過去直接除以 12700 取點數，沒有經過群組的仿射變換矩陣（affine mapping）映射回投影片絕對座標，導致幾何比對產生偏差。
+
+### 2. 修復內容
+1. **AppleScript 選取邏輯升級**：
+   - 優先偵測 `has child shape range of sel`。若為 true，取 `shape 1 of child shape range of sel`；否則退回 `shape 1 of shape range of sel`。
+   - 同步更新 `_STATE_SCRIPT_SOURCE` 與 `get_active_powerpoint_state` 內聯 fallback 腳本。
+2. **OpenXML 遞迴走訪與幾何變換矩陣**：
+   - `slidebridge/powerpoint.py` 實作 `_collect_slide_ole_candidates` 與 `_apply_transforms`，支援任意深度的群組巢狀走訪。
+   - 依據 OpenXML DrawingML 公式進行座標空間映射：
+     `scale_x = ext.cx / chExt.cx`，`world_x = off.x + (child_x - chOff.x) * scale_x`
+     實測將子圖表座標與 AppleScript 投影片座標誤差降至 < 0.00002 pt（次像素級完全一致）。
+3. **智慧選取策略（Smart Group Matching）**：
+   - 若使用者點選群組內的子圖表：幾何與名稱匹配 100% 精準命中。
+   - 若使用者點選的是整個父群組容器：
+     - 若群組內恰好只有 1 個 Origin 圖表：自動推論並直接選取該圖表。
+     - 若群組內有多個 Origin 圖表：拋出清晰引導訊息，提示群組名稱與包含的所有圖表清單，指引使用者在 PPT 中點選特定圖表。
+
+### 3. 驗證
+- 227 項 Python 單元測試全綠通過（新增 3 項針對群組變換、單一圖表群組與多圖表群組引導的專屬整合測試）。
+- macOS App 建置簽名驗證通過。
+- 以使用者本機實體簡報 `/Users/earth/Downloads/ALD-Overall copy.pptx` 投影片 12（`群組 25` 包含 6 個圖表）進行實機 AppleScript 交互測試，成功以 0.000018 pt 誤差秒級命中 `物件 32`。
+
+> 分支狀態：所有特性分支（含 `fix/group-shape-ole-selection`）均已完成驗證並合併回 `main`。此 repo 沒有遠端，全部為本機提交。待辦 #1 的開發從 `main` 另開分支進行。
 
 ## 待辦
 
