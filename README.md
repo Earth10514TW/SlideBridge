@@ -136,11 +136,11 @@ Windows 端需 `origin-bridge.exe`（交叉編譯：`bash scripts/build_origin_b
 - 保留 OLE bytes 不等於 Office 會接受所有變體；輸出仍需在 Mac PowerPoint 檢視，並在 Windows + Origin 驗證編輯流程。數位簽章修改後不再有效。
 - **尚未開始**：PowerPoint Add-in。核心目前依賴本機 resvg，移植到 Office WebView 需要轉換服務或 WASM 後端。
 
-測試：176 項 Python 單元測試（含 14 項原生 EMF 渲染測試），另有 4 項 C++ 持久化測試。
+測試：181 項 Python 單元測試（含 14 項原生 EMF 渲染測試），另有 4 項 C++ 持久化測試。
 
 ```sh
-python3 -m unittest discover -s tests -v                                        # 176 項，其中 14 項原生 EMF skip
-SLIDEBRIDGE_TEST_EMF2SVG=bin/emf2svg-conv python3 -m unittest discover -s tests -v   # 176 項全跑
+python3 -m unittest discover -s tests -v                                        # 181 項，其中 14 項原生 EMF skip
+SLIDEBRIDGE_TEST_EMF2SVG=bin/emf2svg-conv python3 -m unittest discover -s tests -v   # 181 項全跑
 python3 scripts/verify_package.py input.pptx input_fixed.pptx                   # 真實樣本完整性比對
 ```
 

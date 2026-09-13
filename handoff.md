@@ -75,15 +75,15 @@ Updated: 2026-09-13. 使用者面向的說明在 [README.md](README.md)，Origin
 - 真實 Origin95.Graph 簡報：EMF 轉換、輸出檢視、`scripts/verify_package.py` 完整性比對（4 份嵌入 OLE 中只有目標那份改變，其餘 bit-identical、關係重寫、無懸空參照）。
 - Windows 11 Lite VM 上的 PowerShell smoke test（`scripts/smoke_origin_bridge.ps1`）100% 通過。
 - Mac PowerPoint 熱重載、停留在原投影片、`.sb_backup.pptx` 備份。
-- 147 項 Python 單元測試全綠（14 項原生 EMF 需 `SLIDEBRIDGE_TEST_EMF2SVG`），4 項 C++ 持久化測試通過。
+- 181 項 Python 單元測試全綠（14 項原生 EMF 需 `SLIDEBRIDGE_TEST_EMF2SVG`），4 項 C++ 持久化測試通過。
 
 注意：`verify_package.py` 若沒有用 `--allow-parts` 指名被改動的 OLE，會回報 `passed: false`，那是預期行為不是失敗。
 
 ## 常用指令
 
 ```sh
-python3 -m unittest discover -s tests -q                                              # 133 項
-SLIDEBRIDGE_TEST_EMF2SVG=bin/emf2svg-conv python3 -m unittest discover -s tests -v     # 147 項
+python3 -m unittest discover -s tests -q                                              # 181 項（14 項原生 EMF skip）
+SLIDEBRIDGE_TEST_EMF2SVG=bin/emf2svg-conv python3 -m unittest discover -s tests -v     # 181 項全跑
 bash scripts/build_patched_emf2svg.sh                                                 # 重建修補版轉換器
 bash scripts/build_origin_bridge.sh                                                   # 交叉編譯 Windows helper
 bash scripts/build_mac_app.sh                                                         # 重建 SwiftUI App
@@ -139,7 +139,9 @@ clang++ -std=c++17 -Wall -Wextra native/origin-bridge/save_sequence_test.cpp -o 
 5. **DoctorView 與 BridgeProcess 錯誤清理與非零 ExitCode 容錯**：
    - 修正 `BridgeProcess.doctor()` 支援 `allowNonZeroExit: true`：當環境診斷中有項目未通過（例如 Windows VM 未開機）時，Python CLI 會回傳 exit code 1，過去 Swift 端會誤當成程式崩潰並彈出 Alert 將整串 raw JSON 倒給使用者；修正後正常解析為 `DoctorReport` 並在 App 原生卡片中優雅顯示紅叉與引導建議。
    - 增加全域 `cleanErrorMessage` 安全網，確保任何情況下絕不向使用者展示原始 JSON 括號語法。
-   - 修復 `scripts/build_mac_app.sh` codesign 遇 extended attributes / FinderInfo 的簽名清理問題。全部 180 項測試全綠通過。
+   - 修復 `scripts/build_mac_app.sh` codesign 遇 extended attributes / FinderInfo 的簽名清理問題。全部 181 項測試全綠通過。
+
+> 分支狀態：`feat/app-ui-optimization` 已以 fast-forward 合併回 `main`（`main` = `f9c75d7`），上述四項優化現已在 `main` 上。此 repo 沒有遠端，全部為本機提交。待辦 #1 的開發從 `main` 另開分支進行。
 
 ## 待辦
 
